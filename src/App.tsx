@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
+
 
 /* -------------------- 定数・型 -------------------- */
 const RANKS = [
