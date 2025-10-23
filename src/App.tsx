@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
 
-
 /* -------------------- 定数・型 -------------------- */
 const RANKS = [
   "iron4", "iron3", "iron2", "iron1",
@@ -32,6 +31,7 @@ const STREAK_CAP = 100;
 const TEAMMATE_LOOKBACK = 3;   // 直近何試合分の履歴を見るか（最新から）
 const TEAMMATE_PENALTY = 20;  // 同一ペアが再同席したときのペナルティ（×回数）
 
+/* -------------------- 型 -------------------- */
 type Player = {
   id: string;
   name: string;
@@ -42,7 +42,8 @@ type Player = {
   streak: number; // >0 連勝, <0 連敗, 0 なし
 };
 
-type BalPlayer = { name: string; mmr: number };
+// ★ ID ベースで運用（重複名でも安全）
+type BalPlayer = { id: string; name: string; mmr: number };
 
 type Assignment = {
   teamA: BalPlayer[];
@@ -50,6 +51,8 @@ type Assignment = {
   score: number; // MMR差 + 再同席ペナルティ
   mmrA: number;
   mmrB: number;
+  mmrScore: number;   // |MMR差|
+  pairScore: number;  // 同席ペナルティ合計
 };
 
 type MatchRecord = {
@@ -61,8 +64,10 @@ type MatchRecord = {
   mmrA: number;
   mmrB: number;
   score: number;
-  teamA: string[];
-  teamB: string[];
+  teamA: string[];   // names（表示用に残す）
+  teamB: string[];   // names（表示用に残す）
+  teamAIds?: string[]; // ★追加（新データ）
+  teamBIds?: string[]; // ★追加（新データ）
 };
 
 /* -------------------- ユーティリティ -------------------- */
@@ -89,23 +94,26 @@ function streakAdj(streak: number): number {
 function pairKey(a: string, b: string) {
   return [a, b].sort().join("|");
 }
+
 type PairCounts = Record<string, number>;
 
 function buildPairCounts(hist: MatchRecord[], lookback: number): PairCounts {
   const pc: PairCounts = {};
   const slice = hist.slice(0, lookback); // 最新から lookback 件
   for (const h of slice) {
-    // Aの全組み合わせ
-    for (let i = 0; i < h.teamA.length; i++) {
-      for (let j = i + 1; j < h.teamA.length; j++) {
-        const k = pairKey(h.teamA[i], h.teamA[j]);
+    // ★ 新データ（ID配列）があればそれを使う。なければスキップ（後方互換）
+    const A = h.teamAIds ?? [];
+    const B = h.teamBIds ?? [];
+
+    for (let i = 0; i < A.length; i++) {
+      for (let j = i + 1; j < A.length; j++) {
+        const k = pairKey(A[i], A[j]);
         pc[k] = (pc[k] ?? 0) + 1;
       }
     }
-    // Bの全組み合わせ
-    for (let i = 0; i < h.teamB.length; i++) {
-      for (let j = i + 1; j < h.teamB.length; j++) {
-        const k = pairKey(h.teamB[i], h.teamB[j]);
+    for (let i = 0; i < B.length; i++) {
+      for (let j = i + 1; j < B.length; j++) {
+        const k = pairKey(B[i], B[j]);
         pc[k] = (pc[k] ?? 0) + 1;
       }
     }
@@ -117,7 +125,7 @@ function teammatePenalty(team: BalPlayer[], pairCounts: PairCounts): number {
   let pen = 0;
   for (let i = 0; i < team.length; i++) {
     for (let j = i + 1; j < team.length; j++) {
-      const k = pairKey(team[i].name, team[j].name);
+      const k = pairKey(team[i].id, team[j].id);
       const times = pairCounts[k] ?? 0;
       if (times > 0) pen += times * TEAMMATE_PENALTY;
     }
@@ -132,9 +140,10 @@ function scoreAssignment(teamA: BalPlayer[], teamB: BalPlayer[], pairCounts: Pai
   const mmrScore = Math.abs(mmrA - mmrB);
   const pairScore = teammatePenalty(teamA, pairCounts) + teammatePenalty(teamB, pairCounts);
   const score = mmrScore + pairScore;
-  return { teamA, teamB, score, mmrA, mmrB };
+  return { teamA, teamB, score, mmrA, mmrB, mmrScore, pairScore };
 }
 
+/* ===== ランダム探索（一般） ===== */
 function bestOf(players: BalPlayer[], iters = 3000, pairCounts: PairCounts): Assignment | null {
   if (players.length < 6) return null;
   let best: Assignment | null = null;
@@ -143,6 +152,29 @@ function bestOf(players: BalPlayer[], iters = 3000, pairCounts: PairCounts): Ass
     const mid = Math.floor(s.length / 2);
     const cand = scoreAssignment(s.slice(0, mid), s.slice(mid), pairCounts);
     if (!best || cand.score < best.score) best = cand;
+  }
+  return best;
+}
+
+/* ===== 厳密最適化（10人専用・全探索/対称性除去） ===== */
+function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment | null {
+  if (players.length !== 10) return null;
+  const idx = [...players.keys()];
+  const fixed = 0; // idx0 を A に固定し対称性を除去
+  let best: Assignment | null = null;
+
+  for (let a1 = 1; a1 < 10; a1++) {
+    for (let a2 = a1 + 1; a2 < 10; a2++) {
+      for (let a3 = a2 + 1; a3 < 10; a3++) {
+        for (let a4 = a3 + 1; a4 < 10; a4++) {
+          const aIdx = new Set([fixed, a1, a2, a3, a4]);
+          const teamA = idx.filter(i => aIdx.has(i)).map(i => players[i]);
+          const teamB = idx.filter(i => !aIdx.has(i)).map(i => players[i]);
+          const cand = scoreAssignment(teamA, teamB, pairCounts);
+          if (!best || cand.score < best.score) best = cand;
+        }
+      }
+    }
   }
   return best;
 }
@@ -177,11 +209,15 @@ export default function App() {
 
   /* 追加・削除・選択・ランク変更 */
   const addPlayer = () => {
-    if (!name.trim()) return;
+    const trim = name.trim();
+    if (!trim) return;
     if (players.length >= 20) return alert("最大20人までです。");
+    if (players.some(p => p.name === trim)) {
+      if (!confirm("同じ名前のプレイヤーが既にいます。続行しますか？")) return;
+    }
     const newP: Player = {
       id: crypto.randomUUID(),
-      name,
+      name: trim,
       rank,
       selected: false,
       wins: 0,
@@ -217,7 +253,7 @@ export default function App() {
 
   const selectedPlayers = players.filter(p => p.selected);
 
-  // 直近履歴から同席ペアカウントを構築
+  // 直近履歴から同席ペアカウントを構築（ID ベース、新旧混在は旧を無視）
   const pairCounts = useMemo(() => buildPairCounts(history, TEAMMATE_LOOKBACK), [history]);
 
   /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
@@ -228,14 +264,14 @@ export default function App() {
     const balPlayers: BalPlayer[] = selected.map(p => {
       const base = RANK_TO_MMR[p.rank] ?? 1200;
       const eff = base + streakAdj(p.streak);
-      return { name: p.name, mmr: eff };
+      return { id: p.id, name: p.name, mmr: eff };
     });
 
-    const res = bestOf(balPlayers, 3000, pairCounts);
+    const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
     if (!res) return;
     setResult(res);
 
-    // 前回編成と比較して、チームが変わった人をマーキング
+    // 前回編成と比較して、チームが変わった人をマーキング（名前ベースでOK）
     const changedMap: Record<string, boolean> = {};
     if (prevResult) {
       const prevA = new Set(prevResult.teamA.map(p => p.name));
@@ -245,7 +281,6 @@ export default function App() {
         const nowB = res.teamB.some(x => x.name === p.name);
         const wasA = prevA.has(p.name);
         const wasB = prevB.has(p.name);
-        // 前回も出場していて、A↔B が入れ替わった人だけ強調（新規参加者は除外）
         changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
       }
     }
@@ -259,9 +294,10 @@ export default function App() {
 
     const teamA = result.teamA.map(p => p.name);
     const teamB = result.teamB.map(p => p.name);
+    const teamAIds = result.teamA.map(p => p.id);
+    const teamBIds = result.teamB.map(p => p.id);
     const loser: "A" | "B" = winner === "A" ? "B" : "A";
 
-    // 履歴保存（最新=先頭）
     const rec: MatchRecord = {
       id: crypto.randomUUID(),
       index: history.length + 1,
@@ -271,16 +307,16 @@ export default function App() {
       mmrB: result.mmrB,
       score: result.score,
       teamA, teamB,
+      teamAIds, teamBIds, // ★ 新データ
     };
     setHistory(prev => [rec, ...prev]);
 
-    // 個人成績・ストリーク更新
+    // 個人成績・ストリーク更新（IDで判定）
     setPlayers(prev =>
       prev.map(p => {
-        const inA = teamA.includes(p.name);
-        const inB = teamB.includes(p.name);
+        const inA = teamAIds.includes(p.id);
+        const inB = teamBIds.includes(p.id);
         if (!inA && !inB) return p;
-
         const isWin = (winner === "A" && inA) || (winner === "B" && inB);
         if (isWin) {
           return {
@@ -359,7 +395,7 @@ export default function App() {
                       type="checkbox"
                       checked={p.selected}
                       onChange={() => toggleSelect(p.id)}
-                      disabled={!p.selected && selectedPlayers.length >= 10}
+                      disabled={!p.selected && players.filter(pp => pp.selected).length >= 10}
                     />
                     <b className="mr-3">{p.name}</b>
                     <select
@@ -400,19 +436,19 @@ export default function App() {
         {/* 選択状況 & 実行 */}
         <div className="bg-gray-100 rounded-xl p-3 space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold">選択中のメンバー ({selectedPlayers.length}/10)</h3>
+            <h3 className="font-semibold">選択中のメンバー ({players.filter(p => p.selected).length}/10)</h3>
             <button
               onClick={runAutoBalance}
               className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg disabled:opacity-50"
-              disabled={selectedPlayers.length !== 10}
+              disabled={players.filter(p => p.selected).length !== 10}
             >
               選択した10人でオートバランス
             </button>
           </div>
-          {selectedPlayers.length === 0
+          {players.filter(p => p.selected).length === 0
             ? <p className="text-sm opacity-70">まだ選択されていません。</p>
             : <ul className="text-sm list-disc pl-5">
-              {selectedPlayers.map(p => {
+              {players.filter(p => p.selected).map(p => {
                 const base = RANK_TO_MMR[p.rank] ?? 1200;
                 const adj = streakAdj(p.streak);
                 const eff = base + adj;
@@ -433,7 +469,7 @@ export default function App() {
                 <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
                 <ul className="text-sm space-y-1">
                   {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.name}>
+                    <li key={p.id}>
                       <span className={changed[p.name] ? "bg-yellow-100 px-1 rounded" : ""}>
                         {changed[p.name] && "⇄ "}
                         {p.name}
@@ -447,7 +483,7 @@ export default function App() {
                 <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
                 <ul className="text-sm space-y-1">
                   {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.name}>
+                    <li key={p.id}>
                       <span className={changed[p.name] ? "bg-yellow-100 px-1 rounded" : ""}>
                         {changed[p.name] && "⇄ "}
                         {p.name}
@@ -459,6 +495,7 @@ export default function App() {
               </div>
               <div className="md:col-span-2 bg-white rounded-2xl shadow p-4">
                 <div className="text-sm">総合スコア（小さいほど良）: <b>{result.score}</b></div>
+                <div className="text-xs opacity-80 mt-1">内訳：MMR差 <b>{result.mmrScore}</b> ＋ 同席ペナルティ <b>{result.pairScore}</b></div>
                 <div className="text-xs opacity-70">
                   ※ MMR差 + 同席ペナルティ（直近{TEAMMATE_LOOKBACK}試合）。黄色の ⇄ は「前回からチームが変わった人」。
                 </div>
