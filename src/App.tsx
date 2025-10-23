@@ -251,7 +251,6 @@ export default function App() {
     setPlayers(prev => prev.map(p => ({ ...p, streak: 0 })));
   };
 
-  const selectedPlayers = players.filter(p => p.selected);
 
   // 直近履歴から同席ペアカウントを構築（ID ベース、新旧混在は旧を無視）
   const pairCounts = useMemo(() => buildPairCounts(history, TEAMMATE_LOOKBACK), [history]);
