@@ -219,7 +219,7 @@ export default function App() {
       id: crypto.randomUUID(),
       name: trim,
       rank,
-      selected: false,
+      selected: true,
       wins: 0,
       losses: 0,
       streak: 0,
