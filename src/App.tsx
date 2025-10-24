@@ -466,6 +466,12 @@ export default function App() {
             <div className="mt-4 grid md:grid-cols-2 gap-4">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
+                {prevResult && (
+                  <div className="text-[11px] opacity-60 mb-1">
+                    前回A: {prevResult.teamA.map(p => p.name).join(", ")}
+                  </div>
+                )}
+
                 <ul className="text-sm space-y-1">
                   {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
                     <li key={p.id}>
@@ -480,6 +486,12 @@ export default function App() {
               </div>
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
+                {prevResult && (
+                  <div className="text-[11px] opacity-60 mb-1">
+                    前回B: {prevResult.teamB.map(p => p.name).join(", ")}
+                  </div>
+                )}
+
                 <ul className="text-sm space-y-1">
                   {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
                     <li key={p.id}>
