@@ -149,6 +149,17 @@ function changedCount(prev: Assignment | null, cand: Assignment): number {
   return cnt;
 }
 
+function changeScore(changed: number): number {
+  // 0人は0、1人はほぼ無意味、2人や3人が最も高評価、それ以上は緩やかに減衰
+  if (changed <= 1) return 0;
+  if (changed === 2) return 1.0;   // 基準
+  if (changed === 3) return 1.3;   // 理想（最大）
+  if (changed === 4) return 1.1;   // やや減衰
+  if (changed === 5) return 0.8;
+  return 0.5;                      // 6人以上はほぼ変化しすぎで減点
+}
+
+
 
 // 既存の score に「直前編成の回避ペナルティ」を足すラッパー
 function scoreAssignmentWithBan(
@@ -246,7 +257,9 @@ function bestOf(
 
   for (let i = 1; i < eligible.length; i++) {
     const c = eligible[i];
-    const val = c.score - changeW * changedCount(prev, c);
+    const ch = changedCount(prev, c);
+    const val = c.score - changeW * changeScore(ch);
+
     if (val < bestVal) {
       picked = c;
       bestVal = val;
@@ -297,7 +310,9 @@ function bestOfExact10(
 
   for (let i = 1; i < eligible.length; i++) {
     const c = eligible[i];
-    const val = c.score - changeW * changedCount(prev, c);
+    const ch = changedCount(prev, c);
+    const val = c.score - changeW * changeScore(ch);
+
     if (val < bestVal) {
       picked = c;
       bestVal = val;
