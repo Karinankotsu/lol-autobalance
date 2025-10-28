@@ -151,23 +151,14 @@ function changedCount(prev: Assignment | null, cand: Assignment): number {
 }
 
 function changeScore(changed: number): number {
-  // 1人はほぼ評価しない。2人はOK。3人が理想。4人以上は少し減衰。
-  switch (changed) {
-    case 0:
-    case 1:
-      return 0.0;   // ほぼ同じ → 評価しない
-    case 2:
-      return 0.8;   // 一応OK
-    case 3:
-      return 1.5;   // 理想（最も優遇）
-    case 4:
-      return 1.1;   // やや下がる
-    case 5:
-      return 0.7;   // 変えすぎ減点
-    default:
-      return 0.4;   // 6人以上は変化しすぎ
-  }
+  if (changed <= 1) return 0;
+  if (changed === 2) return 1.0;
+  if (changed === 3) return 1.7; // ← ここが最大
+  if (changed === 4) return 0.5;
+  if (changed === 5) return 0;
+  return 0.5;
 }
+
 
 
 
