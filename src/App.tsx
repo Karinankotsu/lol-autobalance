@@ -17,6 +17,18 @@ const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
   // 例:
   // { name: "taro", rank: "gold2" },
    { name: "かりな", rank: "gold3" },
+   { name: "たまじ", rank: "gold3" },
+   { name: "K4ITY", rank: "gold3" },
+   { name: "WS letty", rank: "silver1" },
+   { name: "りむ", rank: "platinum4" },
+   { name: "さとし", rank: "platinum4" },
+   { name: "レキ", rank: "gold1" },
+   { name: "りるえる", rank: "silver4" },
+   { name: "だっぷん", rank: "silver4" },
+   { name: "nai", rank: "bronze3" },
+   { name: "cxla", rank: "silver3" },
+   
+
 ];
 
 // あなたが作った 64桁のSHA-256ハッシュ値に置き換え
