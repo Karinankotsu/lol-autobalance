@@ -284,7 +284,7 @@ export default function App() {
       }
     }
     setChanged(changedMap);
-    setPrevResult(res);
+    
   };
 
   /* 勝敗を記録 → 履歴保存＆個人戦績更新 */
