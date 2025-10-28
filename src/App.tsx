@@ -128,8 +128,9 @@ function pairKey(a: string, b: string) {
 const REPEAT_ASSIGNMENT_PENALTY = 1_000_000;
 
 // ===== 多様性・入替優先の設定 =====
-const DIVERSITY_TOL = 200; // スコアが最小よりこれだけ大きくても許す
-const CHANGE_WEIGHT = 35;  // 入替人数1人あたりのボーナス
+const DIVERSITY_TOL = 450; // 200 → 450 に拡大（±400〜500 目安）
+const CHANGE_WEIGHT = 80;  // 35 → 80 に強化
+
 
 
 // チーム構成のキー（順序に依らない／A-B入れ替えでも同じキー）
@@ -263,7 +264,7 @@ function bestOf(
 
   // 二段最適化： (1)トレランス内 → (2) score - changeW * changedCount を最小化
   let picked = eligible[0];
-  let bestVal = picked.score - changeW * changedCount(prev, picked);
+  let bestVal = picked.score - changeW * changeScore(changedCount(prev, picked));
 
   for (let i = 1; i < eligible.length; i++) {
     const c = eligible[i];
@@ -316,7 +317,7 @@ function bestOfExact10(
   if (eligible.length === 0) return null;
 
   let picked = eligible[0];
-  let bestVal = picked.score - changeW * changedCount(prev, picked);
+  let bestVal = picked.score - changeW * changeScore(changedCount(prev, picked));
 
   for (let i = 1; i < eligible.length; i++) {
     const c = eligible[i];
