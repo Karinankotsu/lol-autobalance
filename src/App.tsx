@@ -27,7 +27,7 @@ const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
    { name: "だっぷん", rank: "silver4" },
    { name: "nai", rank: "bronze3" },
    { name: "cxla", rank: "silver3" },
-   
+
 
 ];
 
@@ -124,6 +124,29 @@ function streakAdj(streak: number): number {
 function pairKey(a: string, b: string) {
   return [a, b].sort().join("|");
 }
+// 直前(複数)の編成を避けるための巨大ペナルティ
+const REPEAT_ASSIGNMENT_PENALTY = 1_000_000;
+
+// チーム構成のキー（順序に依らない／A-B入れ替えでも同じキー）
+function assignmentKey(teamA: BalPlayer[], teamB: BalPlayer[]): string {
+  const a = teamA.map(p => p.id).sort().join(",");
+  const b = teamB.map(p => p.id).sort().join(",");
+  return a < b ? `${a}||${b}` : `${b}||${a}`;
+}
+
+// 既存の score に「直前編成の回避ペナルティ」を足すラッパー
+function scoreAssignmentWithBan(
+  teamA: BalPlayer[],
+  teamB: BalPlayer[],
+  pairCounts: PairCounts,
+  banned: Set<string>
+): Assignment {
+  const base = scoreAssignment(teamA, teamB, pairCounts);
+  const key = assignmentKey(teamA, teamB);
+  const add = banned.has(key) ? REPEAT_ASSIGNMENT_PENALTY : 0;
+  return { ...base, score: base.score + add };
+}
+
 
 type PairCounts = Record<string, number>;
 
@@ -174,23 +197,33 @@ function scoreAssignment(teamA: BalPlayer[], teamB: BalPlayer[], pairCounts: Pai
 }
 
 /* ===== ランダム探索（一般） ===== */
-function bestOf(players: BalPlayer[], iters = 3000, pairCounts: PairCounts): Assignment | null {
+function bestOf(
+  players: BalPlayer[],
+  iters = 3000,
+  pairCounts: PairCounts,
+  banned: Set<string>
+): Assignment | null {
   if (players.length < 6) return null;
   let best: Assignment | null = null;
   for (let i = 0; i < iters; i++) {
     const s = shuffle(players);
     const mid = Math.floor(s.length / 2);
-    const cand = scoreAssignment(s.slice(0, mid), s.slice(mid), pairCounts);
+    const cand = scoreAssignmentWithBan(s.slice(0, mid), s.slice(mid), pairCounts, banned);
     if (!best || cand.score < best.score) best = cand;
   }
   return best;
 }
 
+
 /* ===== 厳密最適化（10人専用・全探索/対称性除去） ===== */
-function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment | null {
+function bestOfExact10(
+  players: BalPlayer[],
+  pairCounts: PairCounts,
+  banned: Set<string>
+): Assignment | null {
   if (players.length !== 10) return null;
   const idx = [...players.keys()];
-  const fixed = 0; // idx0 を A に固定し対称性を除去
+  const fixed = 0;
   let best: Assignment | null = null;
 
   for (let a1 = 1; a1 < 10; a1++) {
@@ -200,7 +233,7 @@ function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment
           const aIdx = new Set([fixed, a1, a2, a3, a4]);
           const teamA = idx.filter(i => aIdx.has(i)).map(i => players[i]);
           const teamB = idx.filter(i => !aIdx.has(i)).map(i => players[i]);
-          const cand = scoreAssignment(teamA, teamB, pairCounts);
+          const cand = scoreAssignmentWithBan(teamA, teamB, pairCounts, banned);
           if (!best || cand.score < best.score) best = cand;
         }
       }
@@ -208,6 +241,7 @@ function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment
   }
   return best;
 }
+
 
 /* -------------------- メインUI -------------------- */
 export default function App() {
@@ -220,6 +254,9 @@ export default function App() {
 const [secretUnlocked, setSecretUnlocked] = useState(false);
 const [pwInput, setPwInput] = useState("");
 const [pwError, setPwError] = useState("");
+
+// 直近で出した編成キー（直前2件を避ける）
+const [recentKeys, setRecentKeys] = useState<string[]>([]);
 
 // よく使うメンバー（クリック登録用）
 type Favorite = { id: string; name: string; rank: string };
@@ -324,7 +361,6 @@ const addOrSelectFavorite = (name: string, rank: string) => {
   const selected = players.filter(p => p.selected);
   if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
-  // 直前の編成を退避（今回の比較用）
   const prev = result ?? null;
 
   const balPlayers: BalPlayer[] = selected.map(p => {
@@ -333,14 +369,18 @@ const addOrSelectFavorite = (name: string, rank: string) => {
     return { id: p.id, name: p.name, mmr: eff };
   });
 
-  const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
+  // 直前に出した編成（最大2件）を避ける
+  const banned = new Set(recentKeys);
+
+  const res =
+    bestOfExact10(balPlayers, pairCounts, banned) ??
+    bestOf(balPlayers, 3000, pairCounts, banned);
   if (!res) return;
 
-  // 先に「前回」を確定
   if (prev) setPrevResult(prev);
   setResult(res);
 
-  // 前回編成と比較して、チームが変わった人をマーキング（名前ベース）
+  // 変更者ハイライト
   const changedMap: Record<string, boolean> = {};
   if (prev) {
     const prevA = new Set(prev.teamA.map(p => p.name));
@@ -354,7 +394,12 @@ const addOrSelectFavorite = (name: string, rank: string) => {
     }
   }
   setChanged(changedMap);
+
+  // 採用した編成を recentKeys に記録（先頭に追加、重複排除、最大2件）
+  const key = assignmentKey(res.teamA, res.teamB);
+  setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
 };
+
 
 
   /* 勝敗を記録 → 履歴保存＆個人戦績更新 */
@@ -405,6 +450,7 @@ const addOrSelectFavorite = (name: string, rank: string) => {
 
     // 今回の編成を「直近の基準」として固定（次回の変更ハイライト用）
     setPrevResult(result);
+    setRecentKeys([]); // ★ ここで回避セットをリセット（任意）
   };
 
   const clearHistory = () => {
