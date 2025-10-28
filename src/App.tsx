@@ -768,7 +768,7 @@ const addOrSelectFavorite = (name: string, rank: string) => {
   {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
     <li key={p.id}>
       <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-        {switched[p.id] ? `⇄ ${switched[p.id]} ` : ""}
+        {switched[p.id] ? `⇄  ` : ""}
         {p.name}
       </span>
       （MMR {p.mmr}）
@@ -789,7 +789,7 @@ const addOrSelectFavorite = (name: string, rank: string) => {
   {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
     <li key={p.id}>
       <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-        {switched[p.id] ? `⇄ ${switched[p.id]} ` : ""}
+        {switched[p.id] ? `⇄  ` : ""}
         {p.name}
       </span>
       （MMR {p.mmr}）
