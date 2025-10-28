@@ -20,7 +20,7 @@ const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
 ];
 
 // あなたが作った 64桁のSHA-256ハッシュ値に置き換え
-const PASSWORD_HASH_HEX = "＜b826ad52cfadcf698c46d305969aaeed6f5a36d1c215cfd6f44b1c3621924f3f＞";
+const PASSWORD_HASH_HEX = "b826ad52cfadcf698c46d305969aaeed6f5a36d1c215cfd6f44b1c3621924f3f";
 
 // 文字列 → SHA-256(HEX) 変換
 async function sha256Hex(text: string): Promise<string> {
