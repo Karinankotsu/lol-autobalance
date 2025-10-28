@@ -127,12 +127,28 @@ function pairKey(a: string, b: string) {
 // 直前(複数)の編成を避けるための巨大ペナルティ
 const REPEAT_ASSIGNMENT_PENALTY = 1_000_000;
 
+// ===== 多様性・入替優先の設定 =====
+const DIVERSITY_TOL = 200; // スコアが最小よりこれだけ大きくても許す
+const CHANGE_WEIGHT = 35;  // 入替人数1人あたりのボーナス
+
+
 // チーム構成のキー（順序に依らない／A-B入れ替えでも同じキー）
 function assignmentKey(teamA: BalPlayer[], teamB: BalPlayer[]): string {
   const a = teamA.map(p => p.id).sort().join(",");
   const b = teamB.map(p => p.id).sort().join(",");
   return a < b ? `${a}||${b}` : `${b}||${a}`;
 }
+
+function changedCount(prev: Assignment | null, cand: Assignment): number {
+  if (!prev) return 0;
+  const prevA = new Set(prev.teamA.map(p => p.id));
+  const prevB = new Set(prev.teamB.map(p => p.id));
+  let cnt = 0;
+  for (const p of cand.teamA) if (prevB.has(p.id)) cnt++; // B→A
+  for (const p of cand.teamB) if (prevA.has(p.id)) cnt++; // A→B
+  return cnt;
+}
+
 
 // 既存の score に「直前編成の回避ペナルティ」を足すラッパー
 function scoreAssignmentWithBan(
@@ -201,17 +217,42 @@ function bestOf(
   players: BalPlayer[],
   iters = 3000,
   pairCounts: PairCounts,
-  banned: Set<string>
+  banned: Set<string>,
+  prev: Assignment | null,
+  tol = DIVERSITY_TOL,
+  changeW = CHANGE_WEIGHT
 ): Assignment | null {
   if (players.length < 6) return null;
-  let best: Assignment | null = null;
+
+  let minScore = Infinity;
+  const pool: Assignment[] = [];
+
   for (let i = 0; i < iters; i++) {
     const s = shuffle(players);
     const mid = Math.floor(s.length / 2);
     const cand = scoreAssignmentWithBan(s.slice(0, mid), s.slice(mid), pairCounts, banned);
-    if (!best || cand.score < best.score) best = cand;
+    pool.push(cand);
+    if (cand.score < minScore) minScore = cand.score;
   }
-  return best;
+
+  // 「ほぼ最適」だけを残す
+  const cutoff = minScore + tol;
+  const eligible = pool.filter(c => c.score <= cutoff);
+  if (eligible.length === 0) return null;
+
+  // 二段最適化： (1)トレランス内 → (2) score - changeW * changedCount を最小化
+  let picked = eligible[0];
+  let bestVal = picked.score - changeW * changedCount(prev, picked);
+
+  for (let i = 1; i < eligible.length; i++) {
+    const c = eligible[i];
+    const val = c.score - changeW * changedCount(prev, c);
+    if (val < bestVal) {
+      picked = c;
+      bestVal = val;
+    }
+  }
+  return picked;
 }
 
 
@@ -219,12 +260,18 @@ function bestOf(
 function bestOfExact10(
   players: BalPlayer[],
   pairCounts: PairCounts,
-  banned: Set<string>
+  banned: Set<string>,
+  prev: Assignment | null,
+  tol = DIVERSITY_TOL,
+  changeW = CHANGE_WEIGHT
 ): Assignment | null {
   if (players.length !== 10) return null;
+
   const idx = [...players.keys()];
   const fixed = 0;
-  let best: Assignment | null = null;
+
+  let minScore = Infinity;
+  const pool: Assignment[] = [];
 
   for (let a1 = 1; a1 < 10; a1++) {
     for (let a2 = a1 + 1; a2 < 10; a2++) {
@@ -234,13 +281,31 @@ function bestOfExact10(
           const teamA = idx.filter(i => aIdx.has(i)).map(i => players[i]);
           const teamB = idx.filter(i => !aIdx.has(i)).map(i => players[i]);
           const cand = scoreAssignmentWithBan(teamA, teamB, pairCounts, banned);
-          if (!best || cand.score < best.score) best = cand;
+          pool.push(cand);
+          if (cand.score < minScore) minScore = cand.score;
         }
       }
     }
   }
-  return best;
+
+  const cutoff = minScore + tol;
+  const eligible = pool.filter(c => c.score <= cutoff);
+  if (eligible.length === 0) return null;
+
+  let picked = eligible[0];
+  let bestVal = picked.score - changeW * changedCount(prev, picked);
+
+  for (let i = 1; i < eligible.length; i++) {
+    const c = eligible[i];
+    const val = c.score - changeW * changedCount(prev, c);
+    if (val < bestVal) {
+      picked = c;
+      bestVal = val;
+    }
+  }
+  return picked;
 }
+
 
 
 /* -------------------- メインUI -------------------- */
@@ -373,8 +438,8 @@ const addOrSelectFavorite = (name: string, rank: string) => {
   const banned = new Set(recentKeys);
 
   const res =
-    bestOfExact10(balPlayers, pairCounts, banned) ??
-    bestOf(balPlayers, 3000, pairCounts, banned);
+    bestOfExact10(balPlayers, pairCounts, banned, prev) ??
+  bestOf(balPlayers, 3000, pairCounts, banned, prev);
   if (!res) return;
 
   if (prev) setPrevResult(prev);
