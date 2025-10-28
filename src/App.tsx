@@ -140,6 +140,13 @@ function assignmentKey(teamA: BalPlayer[], teamB: BalPlayer[]): string {
   return a < b ? `${a}||${b}` : `${b}||${a}`;
 }
 
+function sideMap(assign: Assignment): Record<string, 'A' | 'B'> {
+  const m: Record<string, 'A' | 'B'> = {};
+  assign.teamA.forEach(p => { m[p.id] = 'A'; });
+  assign.teamB.forEach(p => { m[p.id] = 'B'; });
+  return m;
+}
+
 function changedCount(prev: Assignment | null, cand: Assignment): number {
   if (!prev) return 0;
   const prevA = new Set(prev.teamA.map(p => p.id));
@@ -350,7 +357,8 @@ const [favorites, setFavorites] = useState<Favorite[]>([]);
 
   // 前回の編成（「チームが変わった人」を出すため）
   const [prevResult, setPrevResult] = useState<Assignment | null>(null);
-  const [changed, setChanged] = useState<Record<string, boolean>>({});
+  type SwitchDir = 'A→B' | 'B→A' | null;
+  const [switched, setSwitched] = useState<Record<string, SwitchDir>>({});
 
   /* 保存・読み込み */
   useEffect(() => {
@@ -462,25 +470,28 @@ const addOrSelectFavorite = (name: string, rank: string) => {
   if (prev) setPrevResult(prev);
   setResult(res);
 
-  // 変更者ハイライト
-  const changedMap: Record<string, boolean> = {};
+    // 変更者ハイライト（IDベース & 方向付き）
+  let switchMap: Record<string, SwitchDir> = {};
   if (prev) {
-    const prevA = new Set(prev.teamA.map(p => p.name));
-    const prevB = new Set(prev.teamB.map(p => p.name));
+    const prevSide = sideMap(prev);
+    const nowSide  = sideMap(res);
     for (const p of [...res.teamA, ...res.teamB]) {
-      const nowA = res.teamA.some(x => x.name === p.name);
-      const nowB = res.teamB.some(x => x.name === p.name);
-      const wasA = prevA.has(p.name);
-      const wasB = prevB.has(p.name);
-      changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
+      const before = prevSide[p.id];
+      const now    = nowSide[p.id];
+      switchMap[p.id] = (before && now && before !== now)
+        ? (before === 'A' ? 'A→B' : 'B→A')
+        : null;
     }
+  } else {
+    switchMap = {};
   }
-  setChanged(changedMap);
+  setSwitched(switchMap);
 
-  // 採用した編成を recentKeys に記録（先頭に追加、重複排除、最大2件）
+  // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
   const key = assignmentKey(res.teamA, res.teamB);
   setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
-};
+  }
+
 
 
 
@@ -731,16 +742,17 @@ const addOrSelectFavorite = (name: string, rank: string) => {
                 )}
 
                 <ul className="text-sm space-y-1">
-                  {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.id}>
-                      <span className={changed[p.name] ? "bg-yellow-100 px-1 rounded" : ""}>
-                        {changed[p.name] && "⇄ "}
-                        {p.name}
-                      </span>
-                      （MMR {p.mmr}）
-                    </li>
-                  ))}
-                </ul>
+  {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
+    <li key={p.id}>
+      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
+        {switched[p.id] ? `⇄ ${switched[p.id]} ` : ""}
+        {p.name}
+      </span>
+      （MMR {p.mmr}）
+    </li>
+  ))}
+</ul>
+
               </div>
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
@@ -751,16 +763,17 @@ const addOrSelectFavorite = (name: string, rank: string) => {
                 )}
 
                 <ul className="text-sm space-y-1">
-                  {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.id}>
-                      <span className={changed[p.name] ? "bg-yellow-100 px-1 rounded" : ""}>
-                        {changed[p.name] && "⇄ "}
-                        {p.name}
-                      </span>
-                      （MMR {p.mmr}）
-                    </li>
-                  ))}
-                </ul>
+  {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
+    <li key={p.id}>
+      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
+        {switched[p.id] ? `⇄ ${switched[p.id]} ` : ""}
+        {p.name}
+      </span>
+      （MMR {p.mmr}）
+    </li>
+  ))}
+</ul>
+
               </div>
               <div className="md:col-span-2 bg-white rounded-2xl shadow p-4">
                 <div className="text-sm">総合スコア（小さいほど良）: <b>{result.score}</b></div>
