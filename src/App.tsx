@@ -61,6 +61,50 @@ const STREAK_CAP = 100;
 const TEAMMATE_LOOKBACK = 3;   // 直近何試合分の履歴を見るか（最新から）
 const TEAMMATE_PENALTY = 20;  // 同一ペアが再同席したときのペナルティ（×回数）
 
+
+// できるだけ 6人入替（= A→B と B→A が3人ずつ）を優先し、
+// 無理なら 5→4→3→2… と緩めていく
+function pickBestWithSwitchPreference(
+  eligible: Assignment[],
+  prev: Assignment | null,
+  changeW: number
+): Assignment {
+  if (!prev) {
+    // 1回目は純粋にスコアのみ
+    return eligible.reduce((a, b) => (a.score < b.score ? a : b));
+  }
+
+  // 変更人数を事前計算
+  const withCh = eligible.map(c => {
+    const ch = changedCount(prev, c);
+    return { c, ch };
+  });
+
+  // 優先階層（6人入替を最優先）
+  const tiers = [6, 5, 4, 3, 2, 1, 0];
+  let pool = withCh;
+  for (const t of tiers) {
+    const cand = withCh.filter(x => x.ch >= t);
+    if (cand.length) {
+      pool = cand;
+      break;
+    }
+  }
+
+  // 同じ階層内で最終スコアを最小化
+  let picked = pool[0].c;
+  let bestVal = pool[0].c.score - changeW * changeScore(pool[0].ch);
+  for (let i = 1; i < pool.length; i++) {
+    const { c, ch } = pool[i];
+    const val = c.score - changeW * changeScore(ch);
+    if (val < bestVal) {
+      picked = c;
+      bestVal = val;
+    }
+  }
+  return picked;
+}
+
 /* -------------------- 型 -------------------- */
 type Player = {
   id: string;
@@ -255,26 +299,15 @@ function bestOf(
     if (cand.score < minScore) minScore = cand.score;
   }
 
-  // 「ほぼ最適」だけを残す
+    // 「ほぼ最適」だけを残す
   const cutoff = minScore + tol;
   const eligible = pool.filter(c => c.score <= cutoff);
   if (eligible.length === 0) return null;
 
-  // 二段最適化： (1)トレランス内 → (2) score - changeW * changedCount を最小化
-  let picked = eligible[0];
-  let bestVal = picked.score - changeW * changeScore(changedCount(prev, picked));
-
-  for (let i = 1; i < eligible.length; i++) {
-    const c = eligible[i];
-    const ch = changedCount(prev, c);
-    const val = c.score - changeW * changeScore(ch);
-
-    if (val < bestVal) {
-      picked = c;
-      bestVal = val;
-    }
-  }
+  // ★ 入替人数(6→5→4→…)で優先 → その範囲で最終スコア最小
+  const picked = pickBestWithSwitchPreference(eligible, prev, changeW);
   return picked;
+
 }
 
 
@@ -310,24 +343,14 @@ function bestOfExact10(
     }
   }
 
-  const cutoff = minScore + tol;
+    const cutoff = minScore + tol;
   const eligible = pool.filter(c => c.score <= cutoff);
   if (eligible.length === 0) return null;
 
-  let picked = eligible[0];
-  let bestVal = picked.score - changeW * changeScore(changedCount(prev, picked));
-
-  for (let i = 1; i < eligible.length; i++) {
-    const c = eligible[i];
-    const ch = changedCount(prev, c);
-    const val = c.score - changeW * changeScore(ch);
-
-    if (val < bestVal) {
-      picked = c;
-      bestVal = val;
-    }
-  }
+  // ★ 入替人数(6→5→4→…)で優先 → その範囲で最終スコア最小
+  const picked = pickBestWithSwitchPreference(eligible, prev, changeW);
   return picked;
+
 }
 
 
