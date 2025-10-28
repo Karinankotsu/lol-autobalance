@@ -12,6 +12,24 @@ const RANKS = [
   "master", "grandmaster", "challenger"
 ];
 
+// よく使うメンバー（パス通過後にメモリに展開）
+const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
+  // 例:
+  // { name: "taro", rank: "gold2" },
+   { name: "かりな", rank: "gold3" },
+];
+
+// あなたが作った 64桁のSHA-256ハッシュ値に置き換え
+const PASSWORD_HASH_HEX = "＜b826ad52cfadcf698c46d305969aaeed6f5a36d1c215cfd6f44b1c3621924f3f＞";
+
+// 文字列 → SHA-256(HEX) 変換
+async function sha256Hex(text: string): Promise<string> {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+
 const RANK_TO_MMR: Record<string, number> = {
   iron4: 600, iron3: 650, iron2: 700, iron1: 750,
   bronze4: 800, bronze3: 850, bronze2: 900, bronze1: 950,
@@ -186,6 +204,16 @@ export default function App() {
   const [rank, setRank] = useState("silver4");
   const [result, setResult] = useState<Assignment | null>(null);
 
+  // パスワードゲート用
+const [secretUnlocked, setSecretUnlocked] = useState(false);
+const [pwInput, setPwInput] = useState("");
+const [pwError, setPwError] = useState("");
+
+// よく使うメンバー（クリック登録用）
+type Favorite = { id: string; name: string; rank: string };
+const [favorites, setFavorites] = useState<Favorite[]>([]);
+
+
   // 対戦履歴（最新が先頭）
   const [history, setHistory] = useState<MatchRecord[]>([]);
 
@@ -241,6 +269,30 @@ export default function App() {
     setPlayers(prev => prev.map(p => (p.id === id ? { ...p, rank: newRank } : p)));
   };
 
+  // 「お気に入り」から登録 or 既存を選択ON
+const addOrSelectFavorite = (name: string, rank: string) => {
+  const exist = players.find(p => p.name === name);
+  if (exist) {
+    setPlayers(prev => prev.map(p =>
+      p.id === exist.id ? { ...p, selected: true, rank } : p
+    ));
+    return;
+  }
+  if (players.length >= 20) return alert("最大20人までです。");
+  const selectedCount = players.filter(p => p.selected).length;
+  const newP: Player = {
+    id: crypto.randomUUID(),
+    name,
+    rank,
+    selected: selectedCount < 10, // 空きがあれば自動選択ON
+    wins: 0,
+    losses: 0,
+    streak: 0,
+  };
+  setPlayers(prev => [...prev, newP]);
+};
+
+
   // 個別ストリークリセット
   const resetStreakOne = (id: string) => {
     setPlayers(prev => prev.map(p => (p.id === id ? { ...p, streak: 0 } : p)));
@@ -257,35 +309,41 @@ export default function App() {
 
   /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
   const runAutoBalance = () => {
-    const selected = players.filter(p => p.selected);
-    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
+  const selected = players.filter(p => p.selected);
+  if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
-    const balPlayers: BalPlayer[] = selected.map(p => {
-      const base = RANK_TO_MMR[p.rank] ?? 1200;
-      const eff = base + streakAdj(p.streak);
-      return { id: p.id, name: p.name, mmr: eff };
-    });
+  // 直前の編成を退避（今回の比較用）
+  const prev = result ?? null;
 
-    const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
-    if (!res) return;
-    setResult(res);
+  const balPlayers: BalPlayer[] = selected.map(p => {
+    const base = RANK_TO_MMR[p.rank] ?? 1200;
+    const eff = base + streakAdj(p.streak);
+    return { id: p.id, name: p.name, mmr: eff };
+  });
 
-    // 前回編成と比較して、チームが変わった人をマーキング（名前ベースでOK）
-    const changedMap: Record<string, boolean> = {};
-    if (prevResult) {
-      const prevA = new Set(prevResult.teamA.map(p => p.name));
-      const prevB = new Set(prevResult.teamB.map(p => p.name));
-      for (const p of [...res.teamA, ...res.teamB]) {
-        const nowA = res.teamA.some(x => x.name === p.name);
-        const nowB = res.teamB.some(x => x.name === p.name);
-        const wasA = prevA.has(p.name);
-        const wasB = prevB.has(p.name);
-        changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
-      }
+  const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
+  if (!res) return;
+
+  // 先に「前回」を確定
+  if (prev) setPrevResult(prev);
+  setResult(res);
+
+  // 前回編成と比較して、チームが変わった人をマーキング（名前ベース）
+  const changedMap: Record<string, boolean> = {};
+  if (prev) {
+    const prevA = new Set(prev.teamA.map(p => p.name));
+    const prevB = new Set(prev.teamB.map(p => p.name));
+    for (const p of [...res.teamA, ...res.teamB]) {
+      const nowA = res.teamA.some(x => x.name === p.name);
+      const nowB = res.teamB.some(x => x.name === p.name);
+      const wasA = prevA.has(p.name);
+      const wasB = prevB.has(p.name);
+      changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
     }
-    setChanged(changedMap);
-    
-  };
+  }
+  setChanged(changedMap);
+};
+
 
   /* 勝敗を記録 → 履歴保存＆個人戦績更新 */
   const recordResult = (winner: "A" | "B") => {
@@ -379,6 +437,66 @@ export default function App() {
           </select>
           <button onClick={addPlayer} className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg">追加</button>
         </div>
+
+        {/* 管理者用：よく使うメンバー（パスワード保護） */}
+<div className="bg-gray-100 rounded-xl p-3 space-y-2">
+  <h3 className="font-semibold text-sm">よく使うメンバー（パスワード保護）</h3>
+
+  {!secretUnlocked ? (
+    <div className="flex items-center gap-2">
+      <input
+        type="password"
+        placeholder="パスワード"
+        value={pwInput}
+        onChange={(e) => setPwInput(e.target.value)}
+        className="border p-1 rounded-md text-sm"
+      />
+      <button
+        onClick={async () => {
+          setPwError("");
+          const hex = await sha256Hex(pwInput);
+          if (hex === PASSWORD_HASH_HEX) {
+            setSecretUnlocked(true);
+            setFavorites(SECRET_FAVORITES.map(x => ({ id: crypto.randomUUID(), ...x })));
+            setPwInput("");
+          } else {
+            setPwError("パスワードが違います");
+          }
+        }}
+        className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md"
+      >
+        表示
+      </button>
+      {pwError && <span className="text-xs text-red-500">{pwError}</span>}
+    </div>
+  ) : (
+    <>
+      {favorites.length === 0 ? (
+        <p className="text-xs opacity-70">（まだ登録がありません）</p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {favorites.map(f => (
+            <button
+              key={f.id}
+              onClick={() => addOrSelectFavorite(f.name, f.rank)}
+              className="text-xs rounded-full border px-3 py-1 hover:bg-white"
+              title="クリックで登録/選択"
+            >
+              {f.name} <span className="opacity-60">[{f.rank.toUpperCase()}]</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={() => setSecretUnlocked(false)}
+        className="text-[11px] text-gray-500 hover:underline mt-1"
+      >
+        非表示にする
+      </button>
+    </>
+  )}
+</div>
+
 
         {/* 登録済み一覧 */}
         <div>
