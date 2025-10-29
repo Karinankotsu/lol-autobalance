@@ -16,22 +16,50 @@ const RANKS = [
 const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
   // 例:
   // { name: "taro", rank: "gold2" },
-   { name: "かりな", rank: "gold3" },
-   { name: "たまじ", rank: "gold3" },
-   { name: "K4ITY", rank: "gold3" },
-   { name: "WS letty", rank: "silver1" },
-   { name: "りむ", rank: "platinum4" },
-   { name: "さとし", rank: "platinum4" },
-   { name: "レキ", rank: "gold1" },
-   { name: "りるえる", rank: "silver4" },
-   { name: "だっぷん", rank: "silver4" },
-   { name: "nai", rank: "bronze3" },
-   { name: "cxla", rank: "silver3" },
+  { name: "かりな", rank: "gold3" },
+  { name: "たまじ", rank: "gold3" },
+  { name: "K4ITY", rank: "gold3" },
+  { name: "WS letty", rank: "silver1" },
+  { name: "りむ", rank: "platinum4" },
+  { name: "さとし", rank: "platinum4" },
+  { name: "レキ", rank: "gold1" },
+  { name: "りるえる", rank: "silver4" },
+  { name: "だっぷん", rank: "silver4" },
+  { name: "nai", rank: "bronze3" },
+  { name: "cxla", rank: "silver3" },
 
 
 ];
 
-// あなたが作った 64桁のSHA-256ハッシュ値に置き換え
+// 直前試合(MatchRecord) → Assignmentっぽい構造に復元（mmrは0でOK）
+function assignmentFromRecord(rec: MatchRecord, players: Player[]): Assignment {
+  const id2name = new Map(players.map(p => [p.id, p.name]));
+
+  const mk = (ids?: string[], names?: string[]): BalPlayer[] => {
+    if (ids && ids.length > 0) {
+      return ids.map(id => ({
+        id,
+        name: id2name.get(id) ?? "(unknown)",
+        mmr: 0,
+      }));
+    }
+    // 古い履歴でIDがない場合は名前ベースで暫定IDを付与
+    return (names ?? []).map(n => ({
+      id: `name:${n}`,
+      name: n,
+      mmr: 0,
+    }));
+  };
+
+  return {
+    teamA: mk(rec.teamAIds, rec.teamA),
+    teamB: mk(rec.teamBIds, rec.teamB),
+    score: 0, mmrA: 0, mmrB: 0, mmrScore: 0, pairScore: 0,
+  };
+}
+
+
+// 作った 64桁のSHA-256ハッシュ値に置き換え
 const PASSWORD_HASH_HEX = "b826ad52cfadcf698c46d305969aaeed6f5a36d1c215cfd6f44b1c3621924f3f";
 
 // 文字列 → SHA-256(HEX) 変換
@@ -299,7 +327,7 @@ function bestOf(
     if (cand.score < minScore) minScore = cand.score;
   }
 
-    // 「ほぼ最適」だけを残す
+  // 「ほぼ最適」だけを残す
   const cutoff = minScore + tol;
   const eligible = pool.filter(c => c.score <= cutoff);
   if (eligible.length === 0) return null;
@@ -343,7 +371,7 @@ function bestOfExact10(
     }
   }
 
-    const cutoff = minScore + tol;
+  const cutoff = minScore + tol;
   const eligible = pool.filter(c => c.score <= cutoff);
   if (eligible.length === 0) return null;
 
@@ -362,17 +390,18 @@ export default function App() {
   const [rank, setRank] = useState("silver4");
   const [result, setResult] = useState<Assignment | null>(null);
 
+
   // パスワードゲート用
-const [secretUnlocked, setSecretUnlocked] = useState(false);
-const [pwInput, setPwInput] = useState("");
-const [pwError, setPwError] = useState("");
+  const [secretUnlocked, setSecretUnlocked] = useState(false);
+  const [pwInput, setPwInput] = useState("");
+  const [pwError, setPwError] = useState("");
 
-// 直近で出した編成キー（直前2件を避ける）
-const [recentKeys, setRecentKeys] = useState<string[]>([]);
+  // 直近で出した編成キー（直前2件を避ける）
+  const [recentKeys, setRecentKeys] = useState<string[]>([]);
 
-// よく使うメンバー（クリック登録用）
-type Favorite = { id: string; name: string; rank: string };
-const [favorites, setFavorites] = useState<Favorite[]>([]);
+  // よく使うメンバー（クリック登録用）
+  type Favorite = { id: string; name: string; rank: string };
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
 
 
   // 対戦履歴（最新が先頭）
@@ -396,6 +425,13 @@ const [favorites, setFavorites] = useState<Favorite[]>([]);
   useEffect(() => {
     localStorage.setItem("match_history", JSON.stringify(history));
   }, [history]);
+  // 直前に「記録」された試合（history[0]）を Assignment 風に復元
+  const lastMatch = useMemo<Assignment | null>(() => {
+    if (history.length === 0) return null;
+    return assignmentFromRecord(history[0], players);
+  }, [history, players]);
+
+
 
   /* 追加・削除・選択・ランク変更 */
   const addPlayer = () => {
@@ -432,27 +468,27 @@ const [favorites, setFavorites] = useState<Favorite[]>([]);
   };
 
   // 「お気に入り」から登録 or 既存を選択ON
-const addOrSelectFavorite = (name: string, rank: string) => {
-  const exist = players.find(p => p.name === name);
-  if (exist) {
-    setPlayers(prev => prev.map(p =>
-      p.id === exist.id ? { ...p, selected: true, rank } : p
-    ));
-    return;
-  }
-  if (players.length >= 20) return alert("最大20人までです。");
-  const selectedCount = players.filter(p => p.selected).length;
-  const newP: Player = {
-    id: crypto.randomUUID(),
-    name,
-    rank,
-    selected: selectedCount < 10, // 空きがあれば自動選択ON
-    wins: 0,
-    losses: 0,
-    streak: 0,
+  const addOrSelectFavorite = (name: string, rank: string) => {
+    const exist = players.find(p => p.name === name);
+    if (exist) {
+      setPlayers(prev => prev.map(p =>
+        p.id === exist.id ? { ...p, selected: true, rank } : p
+      ));
+      return;
+    }
+    if (players.length >= 20) return alert("最大20人までです。");
+    const selectedCount = players.filter(p => p.selected).length;
+    const newP: Player = {
+      id: crypto.randomUUID(),
+      name,
+      rank,
+      selected: selectedCount < 10, // 空きがあれば自動選択ON
+      wins: 0,
+      losses: 0,
+      streak: 0,
+    };
+    setPlayers(prev => [...prev, newP]);
   };
-  setPlayers(prev => [...prev, newP]);
-};
 
 
   // 個別ストリークリセット
@@ -471,48 +507,50 @@ const addOrSelectFavorite = (name: string, rank: string) => {
 
   /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
   const runAutoBalance = () => {
-  const selected = players.filter(p => p.selected);
-  if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
+    const selected = players.filter(p => p.selected);
+    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
-  const prev = result ?? null;
+    const prev = result ?? null;
 
-  const balPlayers: BalPlayer[] = selected.map(p => {
-    const base = RANK_TO_MMR[p.rank] ?? 1200;
-    const eff = base + streakAdj(p.streak);
-    return { id: p.id, name: p.name, mmr: eff };
-  });
+    const balPlayers: BalPlayer[] = selected.map(p => {
+      const base = RANK_TO_MMR[p.rank] ?? 1200;
+      const eff = base + streakAdj(p.streak);
+      return { id: p.id, name: p.name, mmr: eff };
+    });
 
-  // 直前に出した編成（最大2件）を避ける
-  const banned = new Set(recentKeys);
+    // 直前に出した編成（最大2件）を避ける
+    const banned = new Set(recentKeys);
 
-  const res =
-    bestOfExact10(balPlayers, pairCounts, banned, prev) ??
-  bestOf(balPlayers, 3000, pairCounts, banned, prev);
-  if (!res) return;
+    const res =
+      bestOfExact10(balPlayers, pairCounts, banned, prev) ??
+      bestOf(balPlayers, 3000, pairCounts, banned, prev);
+    if (!res) return;
 
-  if (prev) setPrevResult(prev);
-  setResult(res);
+    if (prev) setPrevResult(prev);
+    setResult(res);
 
     // 変更者ハイライト（IDベース & 方向付き）
-  let switchMap: Record<string, SwitchDir> = {};
-  if (prev) {
-    const prevSide = sideMap(prev);
-    const nowSide  = sideMap(res);
-    for (const p of [...res.teamA, ...res.teamB]) {
-      const before = prevSide[p.id];
-      const now    = nowSide[p.id];
-      switchMap[p.id] = (before && now && before !== now)
-        ? (before === 'A' ? 'A→B' : 'B→A')
-        : null;
+    let switchMap: Record<string, SwitchDir> = {};
+    const prevForSwitch: Assignment | null = lastMatch ?? prev;  // ★ 直前試合を最優先
+    if (prevForSwitch) {
+      const prevSide = sideMap(prevForSwitch);
+      const nowSide = sideMap(res);
+      for (const p of [...res.teamA, ...res.teamB]) {
+        const before = prevSide[p.id];
+        const now = nowSide[p.id];
+        switchMap[p.id] = (before && now && before !== now)
+          ? (before === 'A' ? 'A→B' : 'B→A')
+          : null;
+      }
+    } else {
+      switchMap = {};
     }
-  } else {
-    switchMap = {};
-  }
-  setSwitched(switchMap);
+    setSwitched(switchMap);
 
-  // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
-  const key = assignmentKey(res.teamA, res.teamB);
-  setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
+
+    // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
+    const key = assignmentKey(res.teamA, res.teamB);
+    setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
   }
 
 
@@ -613,63 +651,63 @@ const addOrSelectFavorite = (name: string, rank: string) => {
         </div>
 
         {/* 管理者用：よく使うメンバー（パスワード保護） */}
-<div className="bg-gray-100 rounded-xl p-3 space-y-2">
-  <h3 className="font-semibold text-sm">よく使うメンバー（パスワード保護）</h3>
+        <div className="bg-gray-100 rounded-xl p-3 space-y-2">
+          <h3 className="font-semibold text-sm">よく使うメンバー（パスワード保護）</h3>
 
-  {!secretUnlocked ? (
-    <div className="flex items-center gap-2">
-      <input
-        type="password"
-        placeholder="パスワード"
-        value={pwInput}
-        onChange={(e) => setPwInput(e.target.value)}
-        className="border p-1 rounded-md text-sm"
-      />
-      <button
-        onClick={async () => {
-          setPwError("");
-          const hex = await sha256Hex(pwInput);
-          if (hex === PASSWORD_HASH_HEX) {
-            setSecretUnlocked(true);
-            setFavorites(SECRET_FAVORITES.map(x => ({ id: crypto.randomUUID(), ...x })));
-            setPwInput("");
-          } else {
-            setPwError("パスワードが違います");
-          }
-        }}
-        className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md"
-      >
-        表示
-      </button>
-      {pwError && <span className="text-xs text-red-500">{pwError}</span>}
-    </div>
-  ) : (
-    <>
-      {favorites.length === 0 ? (
-        <p className="text-xs opacity-70">（まだ登録がありません）</p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {favorites.map(f => (
-            <button
-              key={f.id}
-              onClick={() => addOrSelectFavorite(f.name, f.rank)}
-              className="text-xs rounded-full border px-3 py-1 hover:bg-white"
-              title="クリックで登録/選択"
-            >
-              {f.name} <span className="opacity-60">[{f.rank.toUpperCase()}]</span>
-            </button>
-          ))}
+          {!secretUnlocked ? (
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                placeholder="パスワード"
+                value={pwInput}
+                onChange={(e) => setPwInput(e.target.value)}
+                className="border p-1 rounded-md text-sm"
+              />
+              <button
+                onClick={async () => {
+                  setPwError("");
+                  const hex = await sha256Hex(pwInput);
+                  if (hex === PASSWORD_HASH_HEX) {
+                    setSecretUnlocked(true);
+                    setFavorites(SECRET_FAVORITES.map(x => ({ id: crypto.randomUUID(), ...x })));
+                    setPwInput("");
+                  } else {
+                    setPwError("パスワードが違います");
+                  }
+                }}
+                className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md"
+              >
+                表示
+              </button>
+              {pwError && <span className="text-xs text-red-500">{pwError}</span>}
+            </div>
+          ) : (
+            <>
+              {favorites.length === 0 ? (
+                <p className="text-xs opacity-70">（まだ登録がありません）</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {favorites.map(f => (
+                    <button
+                      key={f.id}
+                      onClick={() => addOrSelectFavorite(f.name, f.rank)}
+                      className="text-xs rounded-full border px-3 py-1 hover:bg-white"
+                      title="クリックで登録/選択"
+                    >
+                      {f.name} <span className="opacity-60">[{f.rank.toUpperCase()}]</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setSecretUnlocked(false)}
+                className="text-[11px] text-gray-500 hover:underline mt-1"
+              >
+                非表示にする
+              </button>
+            </>
+          )}
         </div>
-      )}
-      <button
-        onClick={() => setSecretUnlocked(false)}
-        className="text-[11px] text-gray-500 hover:underline mt-1"
-      >
-        非表示にする
-      </button>
-    </>
-  )}
-</div>
 
 
         {/* 登録済み一覧 */}
@@ -758,44 +796,49 @@ const addOrSelectFavorite = (name: string, rank: string) => {
             <div className="mt-4 grid md:grid-cols-2 gap-4">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
-                {prevResult && (
+                {/* 👇 この位置に挿入 */}
+                {/* チームAカード内の前回表示 */}
+                {(lastMatch ?? prevResult) && (
                   <div className="text-[11px] opacity-60 mb-1">
-                    前回A: {prevResult.teamA.map(p => p.name).join(", ")}
+                    前回A: {(lastMatch ?? prevResult)!.teamA.map(p => p.name).join(", ")}
                   </div>
                 )}
 
+
                 <ul className="text-sm space-y-1">
-  {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
-    <li key={p.id}>
-      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-        {switched[p.id] ? `⇄  ` : ""}
-        {p.name}
-      </span>
-      （MMR {p.mmr}）
-    </li>
-  ))}
-</ul>
+                  {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
+                    <li key={p.id}>
+                      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
+                        {switched[p.id] ? `⇄  ` : ""}
+                        {p.name}
+                      </span>
+                      （MMR {p.mmr}）
+                    </li>
+                  ))}
+                </ul>
 
               </div>
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
-                {prevResult && (
+                {/* チームBカード内の前回表示 */}
+                {(lastMatch ?? prevResult) && (
                   <div className="text-[11px] opacity-60 mb-1">
-                    前回B: {prevResult.teamB.map(p => p.name).join(", ")}
+                    前回B: {(lastMatch ?? prevResult)!.teamB.map(p => p.name).join(", ")}
                   </div>
                 )}
 
+
                 <ul className="text-sm space-y-1">
-  {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
-    <li key={p.id}>
-      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-        {switched[p.id] ? `⇄  ` : ""}
-        {p.name}
-      </span>
-      （MMR {p.mmr}）
-    </li>
-  ))}
-</ul>
+                  {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
+                    <li key={p.id}>
+                      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
+                        {switched[p.id] ? `⇄  ` : ""}
+                        {p.name}
+                      </span>
+                      （MMR {p.mmr}）
+                    </li>
+                  ))}
+                </ul>
 
               </div>
               <div className="md:col-span-2 bg-white rounded-2xl shadow p-4">
