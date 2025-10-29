@@ -810,7 +810,7 @@ export default function App() {
         {/* 結果表示 & 試合結果記録 */}
         {result && (
           <>
-            <div className="mt-4 grid md:grid-cols-3 gap-4">
+            <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto_1fr] items-start">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
                 {/* 👇 この位置に挿入 */}
@@ -835,17 +835,17 @@ export default function App() {
                 </ul>
 
               </div>
-              {/* ⇔ サイド入れ替え（中央） */}
-              <div className="bg-white rounded-2xl shadow p-4 flex flex-col items-center justify-center">
+              {/* ⇔ サイド入れ替え（中央・小さめ） */}
+              <div className="flex md:flex-col items-center justify-center md:min-w-[140px]">
                 <button
                   onClick={swapSides}
-                  className="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg"
+                  className="text-xs md:text-sm border px-3 py-1 rounded-md hover:bg-gray-50"
                   title="メンバーはそのまま、A/Bのラベルだけを入れ替えます"
                 >
                   ⇔ サイドを入れ替え
                 </button>
-                <div className="text-[11px] opacity-60 mt-2 text-center">
-                  ※メンバー構成は固定、A/Bのラベルのみ反転
+                <div className="hidden md:block text-[10px] opacity-60 mt-1 text-center">
+                  A/Bラベルのみ反転
                 </div>
               </div>
 
