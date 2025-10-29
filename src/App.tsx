@@ -403,6 +403,8 @@ export default function App() {
   type Favorite = { id: string; name: string; rank: string };
   const [favorites, setFavorites] = useState<Favorite[]>([]);
 
+  const [pendingRecord, setPendingRecord] = useState(false); // 勝敗未記録フラグ
+
   // サイド(ラベル)だけ入れ替え
   const swapSides = () => {
     if (!result) return;
@@ -527,17 +529,21 @@ export default function App() {
     const selected = players.filter(p => p.selected);
     if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
-    const prev = result ?? null;
+    // ★ 前回の試合結果が未記録なら注意
+    if (pendingRecord) {
+      const ok = confirm("前回の試合結果が未記録です。記録せずに新しい編成を作成しますか？");
+      if (!ok) return;
+    }
 
+    const prev = result ?? null;
+    // （以降は既存の処理そのまま）
     const balPlayers: BalPlayer[] = selected.map(p => {
       const base = RANK_TO_MMR[p.rank] ?? 1200;
       const eff = base + streakAdj(p.streak);
       return { id: p.id, name: p.name, mmr: eff };
     });
 
-    // 直前に出した編成（最大2件）を避ける
     const banned = new Set(recentKeys);
-
     const res =
       bestOfExact10(balPlayers, pairCounts, banned, prev) ??
       bestOf(balPlayers, 3000, pairCounts, banned, prev);
@@ -545,7 +551,6 @@ export default function App() {
 
     if (prev) setPrevResult(prev);
     setResult(res);
-
     // 変更者ハイライト（IDベース & 方向付き）
     let switchMap: Record<string, SwitchDir> = {};
     const prevForSwitch: Assignment | null = lastMatch ?? prev;  // ★ 直前試合を最優先
@@ -565,10 +570,14 @@ export default function App() {
     setSwitched(switchMap);
 
 
-    // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
+    // 変更者ハイライト生成…（既存の処理そのまま）
+
     const key = assignmentKey(res.teamA, res.teamB);
     setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
-  }
+
+    // ★ 新しい編成を出したので「勝敗未記録」状態にする
+    setPendingRecord(true);
+  };
 
 
 
@@ -622,7 +631,9 @@ export default function App() {
     // 今回の編成を「直近の基準」として固定（次回の変更ハイライト用）
     setPrevResult(result);
     setRecentKeys([]); // ★ ここで回避セットをリセット（任意）
+    setPendingRecord(false);
   };
+
 
   const clearHistory = () => {
     if (confirm("対戦履歴をすべて削除しますか？")) {
@@ -791,6 +802,12 @@ export default function App() {
               選択した10人でオートバランス
             </button>
           </div>
+          {pendingRecord && (
+            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-2 py-1">
+              前回の試合結果が未記録です。<b>チームA WIN</b> または <b>チームB WIN</b> を記録してからの実行を推奨します。
+            </div>
+          )}
+
           {players.filter(p => p.selected).length === 0
             ? <p className="text-sm opacity-70">まだ選択されていません。</p>
             : <ul className="text-sm list-disc pl-5">
