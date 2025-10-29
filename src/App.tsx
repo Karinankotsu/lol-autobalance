@@ -403,10 +403,6 @@ export default function App() {
   type Favorite = { id: string; name: string; rank: string };
   const [favorites, setFavorites] = useState<Favorite[]>([]);
 
-  const [pendingRecord, setPendingRecord] = useState(false); // 勝敗未記録フラグ
-
-  const [isBalancing, setIsBalancing] = useState(false); // 実行中ロック（連打防止）
-
 
   // サイド(ラベル)だけ入れ替え
   const swapSides = () => {
@@ -528,34 +524,9 @@ export default function App() {
   const pairCounts = useMemo(() => buildPairCounts(history, TEAMMATE_LOOKBACK), [history]);
 
   /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
-  // 実行ボタンが呼ぶのはこっち（ガード専用）
-  const runAutoBalanceGuarded = () => {
-    if (isBalancing) return; // 多重起動防止
-
-    // ★ 前回の試合結果が未記録なら、ここで確実に止める
-    if (pendingRecord) {
-      const ok = confirm("前回の試合結果が未記録です。記録せずに新しい編成を作成しますか？");
-      if (!ok) return;
-    }
-
+  const runAutoBalance = () => {
     const selected = players.filter(p => p.selected);
-    if (selected.length !== 10) {
-      alert(`ちょうど10人選んでください（現在${selected.length}人）`);
-      return;
-    }
-
-    setIsBalancing(true);
-    try {
-      reallyRunAutoBalance(); // ← この中で初めて setResult 等の変更を行う
-    } finally {
-      setIsBalancing(false);
-    }
-  };
-
-  // 計算本体（状態変更はここから）
-  const reallyRunAutoBalance = () => {
-    const selected = players.filter(p => p.selected);
-    // ここに来る時点で selected.length === 10 は保証されているが、保険で置いておいてもOK
+    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
     const prev = result ?? null;
 
@@ -565,7 +536,9 @@ export default function App() {
       return { id: p.id, name: p.name, mmr: eff };
     });
 
+    // 直前に出した編成（最大2件）を避ける
     const banned = new Set(recentKeys);
+
     const res =
       bestOfExact10(balPlayers, pairCounts, banned, prev) ??
       bestOf(balPlayers, 3000, pairCounts, banned, prev);
@@ -592,15 +565,11 @@ export default function App() {
     }
     setSwitched(switchMap);
 
+
+    // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
     const key = assignmentKey(res.teamA, res.teamB);
     setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
-
-    // ★ 新しい編成を出したので「勝敗未記録」状態にする（←ここで初めて立てる）
-    setPendingRecord(true);
-  };
-
-
-
+  }
 
 
 
@@ -654,9 +623,7 @@ export default function App() {
     // 今回の編成を「直近の基準」として固定（次回の変更ハイライト用）
     setPrevResult(result);
     setRecentKeys([]); // ★ ここで回避セットをリセット（任意）
-    setPendingRecord(false);
   };
-
 
   const clearHistory = () => {
     if (confirm("対戦履歴をすべて削除しますか？")) {
@@ -818,20 +785,13 @@ export default function App() {
           <div className="flex items-center justify-between">
             <h3 className="font-semibold">選択中のメンバー ({players.filter(p => p.selected).length}/10)</h3>
             <button
-              onClick={runAutoBalanceGuarded}
+              onClick={runAutoBalance}
               className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg disabled:opacity-50"
-              disabled={players.filter(p => p.selected).length !== 10 || isBalancing}
+              disabled={players.filter(p => p.selected).length !== 10}
             >
               選択した10人でオートバランス
             </button>
-
           </div>
-          {pendingRecord && (
-            <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-2 py-1">
-              前回の試合結果が未記録です。<b>チームA WIN</b> または <b>チームB WIN</b> を記録してからの実行を推奨します。
-            </div>
-          )}
-
           {players.filter(p => p.selected).length === 0
             ? <p className="text-sm opacity-70">まだ選択されていません。</p>
             : <ul className="text-sm list-disc pl-5">
