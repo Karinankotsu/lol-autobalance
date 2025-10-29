@@ -405,6 +405,9 @@ export default function App() {
 
   const [pendingRecord, setPendingRecord] = useState(false); // 勝敗未記録フラグ
 
+  const [isBalancing, setIsBalancing] = useState(false); // 実行中ロック（連打防止）
+
+
   // サイド(ラベル)だけ入れ替え
   const swapSides = () => {
     if (!result) return;
@@ -525,18 +528,37 @@ export default function App() {
   const pairCounts = useMemo(() => buildPairCounts(history, TEAMMATE_LOOKBACK), [history]);
 
   /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
-  const runAutoBalance = () => {
-    const selected = players.filter(p => p.selected);
-    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
+  // 実行ボタンが呼ぶのはこっち（ガード専用）
+  const runAutoBalanceGuarded = () => {
+    if (isBalancing) return; // 多重起動防止
 
-    // ★ 前回の試合結果が未記録なら注意
+    // ★ 前回の試合結果が未記録なら、ここで確実に止める
     if (pendingRecord) {
       const ok = confirm("前回の試合結果が未記録です。記録せずに新しい編成を作成しますか？");
       if (!ok) return;
     }
 
+    const selected = players.filter(p => p.selected);
+    if (selected.length !== 10) {
+      alert(`ちょうど10人選んでください（現在${selected.length}人）`);
+      return;
+    }
+
+    setIsBalancing(true);
+    try {
+      reallyRunAutoBalance(); // ← この中で初めて setResult 等の変更を行う
+    } finally {
+      setIsBalancing(false);
+    }
+  };
+
+  // 計算本体（状態変更はここから）
+  const reallyRunAutoBalance = () => {
+    const selected = players.filter(p => p.selected);
+    // ここに来る時点で selected.length === 10 は保証されているが、保険で置いておいてもOK
+
     const prev = result ?? null;
-    // （以降は既存の処理そのまま）
+
     const balPlayers: BalPlayer[] = selected.map(p => {
       const base = RANK_TO_MMR[p.rank] ?? 1200;
       const eff = base + streakAdj(p.streak);
@@ -551,6 +573,7 @@ export default function App() {
 
     if (prev) setPrevResult(prev);
     setResult(res);
+
     // 変更者ハイライト（IDベース & 方向付き）
     let switchMap: Record<string, SwitchDir> = {};
     const prevForSwitch: Assignment | null = lastMatch ?? prev;  // ★ 直前試合を最優先
@@ -569,15 +592,15 @@ export default function App() {
     }
     setSwitched(switchMap);
 
-
-    // 変更者ハイライト生成…（既存の処理そのまま）
-
     const key = assignmentKey(res.teamA, res.teamB);
     setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
 
-    // ★ 新しい編成を出したので「勝敗未記録」状態にする
+    // ★ 新しい編成を出したので「勝敗未記録」状態にする（←ここで初めて立てる）
     setPendingRecord(true);
   };
+
+
+
 
 
 
@@ -795,12 +818,13 @@ export default function App() {
           <div className="flex items-center justify-between">
             <h3 className="font-semibold">選択中のメンバー ({players.filter(p => p.selected).length}/10)</h3>
             <button
-              onClick={runAutoBalance}
+              onClick={runAutoBalanceGuarded}
               className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg disabled:opacity-50"
-              disabled={players.filter(p => p.selected).length !== 10}
+              disabled={players.filter(p => p.selected).length !== 10 || isBalancing}
             >
               選択した10人でオートバランス
             </button>
+
           </div>
           {pendingRecord && (
             <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-2 py-1">
