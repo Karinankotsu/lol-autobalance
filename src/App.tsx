@@ -403,6 +403,23 @@ export default function App() {
   type Favorite = { id: string; name: string; rank: string };
   const [favorites, setFavorites] = useState<Favorite[]>([]);
 
+  // サイド(ラベル)だけ入れ替え
+  const swapSides = () => {
+    if (!result) return;
+    const newRes: Assignment = {
+      ...result,
+      teamA: result.teamB,
+      teamB: result.teamA,
+      mmrA: result.mmrB,
+      mmrB: result.mmrA,
+      // mmrScore / pairScore / score はそのままでOK
+    };
+    setResult(newRes);
+
+    // これは「同じチームのままラベルだけ反転」なので、直後のハイライトは消す
+    setSwitched({});
+  };
+
 
   // 対戦履歴（最新が先頭）
   const [history, setHistory] = useState<MatchRecord[]>([]);
@@ -793,7 +810,7 @@ export default function App() {
         {/* 結果表示 & 試合結果記録 */}
         {result && (
           <>
-            <div className="mt-4 grid md:grid-cols-2 gap-4">
+            <div className="mt-4 grid md:grid-cols-3 gap-4">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
                 {/* 👇 この位置に挿入 */}
@@ -818,6 +835,20 @@ export default function App() {
                 </ul>
 
               </div>
+              {/* ⇔ サイド入れ替え（中央） */}
+              <div className="bg-white rounded-2xl shadow p-4 flex flex-col items-center justify-center">
+                <button
+                  onClick={swapSides}
+                  className="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg"
+                  title="メンバーはそのまま、A/Bのラベルだけを入れ替えます"
+                >
+                  ⇔ サイドを入れ替え
+                </button>
+                <div className="text-[11px] opacity-60 mt-2 text-center">
+                  ※メンバー構成は固定、A/Bのラベルのみ反転
+                </div>
+              </div>
+
               <div className="bg-white rounded-2xl shadow p-4">
                 <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
                 {/* チームBカード内の前回表示 */}
