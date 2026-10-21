@@ -73,14 +73,6 @@ type MatchRecord = {
 };
 
 /* -------------------- ユーティリティ -------------------- */
-function shuffle<T>(arr: T[]): T[] {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 // 2連から補正開始：2=±25, 3=±50, 4=±75, 5+=±100
@@ -145,40 +137,24 @@ function scoreAssignment(teamA: BalPlayer[], teamB: BalPlayer[], pairCounts: Pai
   return { teamA, teamB, score, mmrA, mmrB, mmrScore, pairScore };
 }
 
-/* ===== ランダム探索（一般） ===== */
-function bestOf(players: BalPlayer[], iters = 3000, pairCounts: PairCounts): Assignment | null {
-  if (players.length < 6) return null;
-  let best: Assignment | null = null;
-  for (let i = 0; i < iters; i++) {
-    const s = shuffle(players);
-    const mid = Math.floor(s.length / 2);
-    const cand = scoreAssignment(s.slice(0, mid), s.slice(mid), pairCounts);
-    if (!best || cand.score < best.score) best = cand;
-  }
-  return best;
-}
-
-/* ===== 厳密最適化（10人専用・全探索/対称性除去） ===== */
-function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment | null {
-  if (players.length !== 10) return null;
-  const idx = [...players.keys()];
-  const fixed = 0; // idx0 を A に固定し対称性を除去
-  let best: Assignment | null = null;
-
+/* 10人の全126通りを評価し、上位5候補だけを保持（A/B入れ替えは同一編成） */
+function rankedAssignments10(players: BalPlayer[], pairCounts: PairCounts): Assignment[] {
+  if (players.length !== 10) return [];
+  const candidates: Assignment[] = [];
   for (let a1 = 1; a1 < 10; a1++) {
     for (let a2 = a1 + 1; a2 < 10; a2++) {
       for (let a3 = a2 + 1; a3 < 10; a3++) {
         for (let a4 = a3 + 1; a4 < 10; a4++) {
-          const aIdx = new Set([fixed, a1, a2, a3, a4]);
-          const teamA = idx.filter(i => aIdx.has(i)).map(i => players[i]);
-          const teamB = idx.filter(i => !aIdx.has(i)).map(i => players[i]);
-          const cand = scoreAssignment(teamA, teamB, pairCounts);
-          if (!best || cand.score < best.score) best = cand;
+          const aIdx = new Set([0, a1, a2, a3, a4]);
+          const teamA = players.filter((_, i) => aIdx.has(i));
+          const teamB = players.filter((_, i) => !aIdx.has(i));
+          candidates.push(scoreAssignment(teamA, teamB, pairCounts));
         }
       }
     }
   }
-  return best;
+  // スコア最小を優先し、同点ならMMR差が小さいものを優先
+  return candidates.sort((a, b) => a.score - b.score || a.mmrScore - b.mmrScore).slice(0, 5);
 }
 
 /* Riot APIのソロランクをTEAMMIXのランクキーへ変換 */
@@ -226,12 +202,13 @@ export default function App() {
   const [riotUpdatingId, setRiotUpdatingId] = useState<string | null>(null);
   const [riotMessage, setRiotMessage] = useState("");
   const [result, setResult] = useState<Assignment | null>(null);
+  const [candidates, setCandidates] = useState<Assignment[]>([]);
+  const [candidateIndex, setCandidateIndex] = useState(0);
 
   // 対戦履歴（最新が先頭）
   const [history, setHistory] = useState<MatchRecord[]>([]);
 
   // 前回の編成（「チームが変わった人」を出すため）
-  const [prevResult, setPrevResult] = useState<Assignment | null>(null);
   const [changed, setChanged] = useState<Record<string, boolean>>({});
 
   /* 保存・読み込み */
@@ -265,6 +242,7 @@ export default function App() {
       losses: 0,
       streak: 0,
     };
+    invalidateTeams();
     setPlayers([...players, newP]);
     setName("");
   };
@@ -283,6 +261,7 @@ export default function App() {
         throw new Error("このRiot IDはすでに登録されています。");
       }
       if (players.some(p => p.name === fullId) && !confirm("同じ名前のプレイヤーがいます。登録しますか？")) return;
+      invalidateTeams();
       setPlayers(prev => {
         if (prev.length >= 20) return prev;
         return [...prev, {
@@ -308,6 +287,7 @@ export default function App() {
       const data = await fetchRiotRank(player.riotId);
       const rankKey = riotRankToKey(data);
       if (!rankKey) throw new Error("ソロランクを取得できませんでした。現在のランクを維持します。");
+      invalidateTeams();
       setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, rank: rankKey } : p));
       setRiotMessage(`${player.name} のランクを ${rankKey.toUpperCase()} に更新しました。`);
     } catch (error) {
@@ -317,9 +297,12 @@ export default function App() {
     }
   };
 
-  const removePlayer = (id: string) => setPlayers(players.filter(p => p.id !== id));
+  const invalidateTeams = () => { setCandidates([]); setCandidateIndex(0); setResult(null); setChanged({}); };
+
+  const removePlayer = (id: string) => { setPlayers(players.filter(p => p.id !== id)); invalidateTeams(); };
 
   const toggleSelect = (id: string) => {
+    invalidateTeams();
     const selectedCount = players.filter(p => p.selected).length;
     setPlayers(prev => prev.map(p =>
       p.id === id ? { ...p, selected: p.selected ? false : selectedCount < 10 } : p
@@ -327,16 +310,19 @@ export default function App() {
   };
 
   const updateRank = (id: string, newRank: string) => {
+    invalidateTeams();
     setPlayers(prev => prev.map(p => (p.id === id ? { ...p, rank: newRank } : p)));
   };
 
   // 個別ストリークリセット
   const resetStreakOne = (id: string) => {
+    invalidateTeams();
     setPlayers(prev => prev.map(p => (p.id === id ? { ...p, streak: 0 } : p)));
   };
   // 全員ストリークリセット
   const resetStreakAll = () => {
     if (!confirm("全員のストリークをリセットしますか？")) return;
+    invalidateTeams();
     setPlayers(prev => prev.map(p => ({ ...p, streak: 0 })));
   };
 
@@ -344,36 +330,49 @@ export default function App() {
   // 直近履歴から同席ペアカウントを構築（ID ベース、新旧混在は旧を無視）
   const pairCounts = useMemo(() => buildPairCounts(history, TEAMMATE_LOOKBACK), [history]);
 
-  /* オートバランス（ストリーク補正 + 同席回避ペナルティ + 変更者ハイライト） */
-  const runAutoBalance = () => {
-    const selected = players.filter(p => p.selected);
-    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
-
-    const balPlayers: BalPlayer[] = selected.map(p => {
-      const base = RANK_TO_MMR[p.rank] ?? 1200;
-      const eff = base + streakAdj(p.streak);
-      return { id: p.id, name: p.name, mmr: eff };
-    });
-
-    const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
-    if (!res) return;
-    setResult(res);
-
-    // 前回編成と比較して、チームが変わった人をマーキング（名前ベースでOK）
+  // 変更者はプレイヤーIDで比較。A/B全体の入れ替えは「変更」と扱わない。
+  const showAssignment = (next: Assignment, previous: Assignment | null) => {
     const changedMap: Record<string, boolean> = {};
-    if (prevResult) {
-      const prevA = new Set(prevResult.teamA.map(p => p.name));
-      const prevB = new Set(prevResult.teamB.map(p => p.name));
-      for (const p of [...res.teamA, ...res.teamB]) {
-        const nowA = res.teamA.some(x => x.name === p.name);
-        const nowB = res.teamB.some(x => x.name === p.name);
-        const wasA = prevA.has(p.name);
-        const wasB = prevB.has(p.name);
-        changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
+    if (previous) {
+      const previousA = new Set(previous.teamA.map(p => p.id));
+      const previousB = new Set(previous.teamB.map(p => p.id));
+      const nextA = new Set(next.teamA.map(p => p.id));
+      const nextB = new Set(next.teamB.map(p => p.id));
+      const direct = [...nextA].filter(id => previousB.has(id)).length;
+      const swapped = [...nextA].filter(id => previousA.has(id)).length;
+      const flipLabels = swapped < direct;
+      for (const p of [...next.teamA, ...next.teamB]) {
+        const nowA = nextA.has(p.id);
+        changedMap[p.id] = flipLabels
+          ? (nowA ? previousA.has(p.id) : previousB.has(p.id))
+          : (nowA ? previousB.has(p.id) : previousA.has(p.id));
       }
     }
     setChanged(changedMap);
-    setPrevResult(res);
+    setResult(next);
+  };
+
+  /* 全126通りからバランス上位5候補を選び、最良の候補を表示 */
+  const runAutoBalance = () => {
+    const selected = players.filter(p => p.selected);
+    if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
+    const balPlayers: BalPlayer[] = selected.map(p => ({
+      id: p.id, name: p.name,
+      mmr: (RANK_TO_MMR[p.rank] ?? 1200) + streakAdj(p.streak),
+    }));
+    const ranked = rankedAssignments10(balPlayers, pairCounts);
+    if (!ranked.length) return;
+    setCandidates(ranked);
+    setCandidateIndex(0);
+    showAssignment(ranked[0], result);
+  };
+
+  /* 次点のバランス候補へ。上位5通りを巡回 */
+  const changeTeam = () => {
+    if (!candidates.length || !result) return;
+    const nextIndex = (candidateIndex + 1) % candidates.length;
+    setCandidateIndex(nextIndex);
+    showAssignment(candidates[nextIndex], result);
   };
 
   /* 勝敗を記録 → 履歴保存＆個人戦績更新 */
@@ -423,7 +422,7 @@ export default function App() {
     );
 
     // 今回の編成を「直近の基準」として固定（次回の変更ハイライト用）
-    setPrevResult(result);
+    invalidateTeams();
   };
 
   const clearHistory = () => {
@@ -491,14 +490,7 @@ export default function App() {
                       <div className="player-tile-menu">
                         <div>戦績：{p.wins}勝 {p.losses}敗</div>
                         <div>{p.streak === 0 ? '連勝・連敗なし' : `${Math.abs(p.streak)}連${p.streak > 0 ? '勝' : '敗'} / 補正 ${streakAdj(p.streak) > 0 ? '+' : ''}${streakAdj(p.streak)} MMR`}</div>
-                        {p.riotId && (
-                          <button
-                            type="button"
-                            onClick={() => refreshRiotRank(p)}
-                          >
-                            Riotランクを更新
-                          </button>
-                        )}
+                        {p.riotId && <button type="button" disabled={riotUpdatingId !== null} onClick={() => refreshRiotRank(p)}>{riotUpdatingId === p.id ? '取得中...' : 'Riotランクを更新'}</button>}
                         <button type="button" onClick={() => resetStreakOne(p.id)}>連勝・連敗をリセット</button>
                         <button type="button" className="player-tile-delete" onClick={() => { if (confirm(`${p.name}を削除しますか？`)) removePlayer(p.id); }}>プレイヤーを削除</button>
                       </div>
@@ -508,7 +500,7 @@ export default function App() {
               ))}</div>
             </section>
             <section className="panel results-panel"><div className="panel-heading"><div><span className="section-kicker">02 / TEAM RESULT</span><h2>チーム編成</h2></div><span className="muted-caption">バランス結果を比較</span></div>
-              {!result ? <div className="result-placeholder"><div className="placeholder-graphic"><div className="placeholder-card a" /><div className="placeholder-card b" /><div className="placeholder-center">VS</div></div><strong>まだチームが編成されていません</strong><p>10人選択して「チームを編成」を押してください。</p></div> : <><div className="teams-grid"><div className="team-card team-a"><div className="team-title"><span>TEAM A</span><strong>{result.mmrA.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamA].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.name] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div><div className="team-card team-b"><div className="team-title"><span>TEAM B</span><strong>{result.mmrB.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamB].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.name] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div></div><div className="score-strip"><div><span>MMR DIFFERENCE</span><strong>{result.mmrScore}</strong></div><div><span>PAIR PENALTY</span><strong>{result.pairScore}</strong></div><div><span>TOTAL SCORE</span><strong>{result.score}</strong></div></div><div className="win-actions"><span>試合結果を記録</span><button className="btn win-a" onClick={() => recordResult('A')}>TEAM A WIN</button><button className="btn win-b" onClick={() => recordResult('B')}>TEAM B WIN</button></div></>}
+              {!result ? <div className="result-placeholder"><div className="placeholder-graphic"><div className="placeholder-card a" /><div className="placeholder-card b" /><div className="placeholder-center">VS</div></div><strong>まだチームが編成されていません</strong><p>10人選択して「チームを編成」を押してください。</p></div> : <><div className="teams-grid"><div className="team-card team-a"><div className="team-title"><span>TEAM A</span><strong>{result.mmrA.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamA].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.id] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div><div className="team-card team-b"><div className="team-title"><span>TEAM B</span><strong>{result.mmrB.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamB].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.id] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div></div><div className="score-strip"><div><span>MMR DIFFERENCE</span><strong>{result.mmrScore}</strong></div><div><span>PAIR PENALTY</span><strong>{result.pairScore}</strong></div><div><span>TOTAL SCORE</span><strong>{result.score}</strong></div></div><div className="team-switch-actions"><button type="button" className="btn btn-switch" onClick={changeTeam} disabled={candidates.length < 2}>別のチーム編成を見る ↻</button><span>候補 {candidateIndex + 1} / {candidates.length}（スコアが低い順）</span></div><div className="win-actions"><span>試合結果を記録</span><button className="btn win-a" onClick={() => recordResult('A')}>TEAM A WIN</button><button className="btn win-b" onClick={() => recordResult('B')}>TEAM B WIN</button></div></>}
             </section>
             <section className="panel history-panel"><div className="panel-heading"><div><span className="section-kicker">03 / MATCH LOG</span><h2>対戦履歴 <span className="count-pill">{history.length}</span></h2></div>{history.length > 0 && <button className="subtle-link" onClick={clearHistory}>履歴をすべて削除</button>}</div>{history.length === 0 ? <div className="empty-state">まだ対戦履歴はありません。</div> : <div className="history-list">{history.map(h => <details className="history-entry" key={h.id}><summary><span className="history-round">MATCH {String(h.index).padStart(2, '0')}</span><strong>TEAM {h.winner} WIN</strong><small>{new Date(h.timeISO).toLocaleString('ja-JP')}</small><span className="history-chevron">⌄</span></summary><div className="history-detail"><div><b>TEAM A</b>{h.teamA.join(' / ')}</div><div><b>TEAM B</b>{h.teamB.join(' / ')}</div><p>MMR {h.mmrA} : {h.mmrB}　/　スコア {h.score}</p></div></details>)}</div>}</section>
           </main>

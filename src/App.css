@@ -1347,3 +1347,22 @@ button:disabled {
 .riot-feedback { font-size: 11px; color: #547560; margin-top: 9px; overflow-wrap: anywhere; }
 .player-tile-menu button:disabled { opacity: .55; cursor: wait; }
 @media (max-width: 650px) { .riot-register-fields { flex-direction: column; } .btn-riot { width: 100%; } }
+
+/* Ranked alternate team assignments */
+.team-switch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+.btn-switch {
+  background: #e1eee5;
+  color: #365c48;
+  border: 1px solid #c8dfd0;
+}
+.team-switch-actions > span {
+  color: #83978a;
+  font-size: 11px;
+  font-weight: 800;
+}
