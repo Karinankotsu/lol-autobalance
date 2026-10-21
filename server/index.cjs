@@ -4,7 +4,12 @@ const express = require("express");
 const cors = require("cors");
 
 const app = express();
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://lol-autobalance.vercel.app"
+  ]
+}));
 app.use(express.json());
 
 const API_KEY = process.env.RIOT_API_KEY;
@@ -78,6 +83,8 @@ app.get("/api/rank", async (req, res) => {
   }
 });
 
-app.listen(3001, "127.0.0.1", () => {
-  console.log("Riot API server: http://localhost:3001");
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Riot API server running on port ${PORT}`);
 });
