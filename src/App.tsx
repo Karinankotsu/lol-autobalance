@@ -491,6 +491,14 @@ export default function App() {
                       <div className="player-tile-menu">
                         <div>戦績：{p.wins}勝 {p.losses}敗</div>
                         <div>{p.streak === 0 ? '連勝・連敗なし' : `${Math.abs(p.streak)}連${p.streak > 0 ? '勝' : '敗'} / 補正 ${streakAdj(p.streak) > 0 ? '+' : ''}${streakAdj(p.streak)} MMR`}</div>
+                        {p.riotId && (
+                          <button
+                            type="button"
+                            onClick={() => refreshRiotRank(p)}
+                          >
+                            Riotランクを更新
+                          </button>
+                        )}
                         <button type="button" onClick={() => resetStreakOne(p.id)}>連勝・連敗をリセット</button>
                         <button type="button" className="player-tile-delete" onClick={() => { if (confirm(`${p.name}を削除しますか？`)) removePlayer(p.id); }}>プレイヤーを削除</button>
                       </div>
