@@ -337,7 +337,6 @@ export default function App() {
       const previousA = new Set(previous.teamA.map(p => p.id));
       const previousB = new Set(previous.teamB.map(p => p.id));
       const nextA = new Set(next.teamA.map(p => p.id));
-      const nextB = new Set(next.teamB.map(p => p.id));
       const direct = [...nextA].filter(id => previousB.has(id)).length;
       const swapped = [...nextA].filter(id => previousA.has(id)).length;
       const flipLabels = swapped < direct;
