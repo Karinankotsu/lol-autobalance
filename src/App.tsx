@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import "./App.css";
 
 /* -------------------- 定数・型 -------------------- */
 const RANKS = [
@@ -11,64 +12,6 @@ const RANKS = [
   "diamond4", "diamond3", "diamond2", "diamond1",
   "master", "grandmaster", "challenger"
 ];
-
-// よく使うメンバー（パス通過後にメモリに展開）
-const SECRET_FAVORITES: Array<{ name: string; rank: string }> = [
-  // 例:
-  // { name: "taro", rank: "gold2" },
-  { name: "かりな", rank: "gold3" },
-  { name: "たまじ", rank: "gold3" },
-  { name: "K4ITY", rank: "gold3" },
-  { name: "WS letty", rank: "silver1" },
-  { name: "りむ", rank: "platinum4" },
-  { name: "さとし", rank: "platinum4" },
-  { name: "レキ", rank: "gold1" },
-  { name: "りるえる", rank: "silver4" },
-  { name: "だっぷん", rank: "silver4" },
-  { name: "nai", rank: "bronze3" },
-  { name: "cxla", rank: "silver3" },
-
-
-];
-
-// 直前試合(MatchRecord) → Assignmentっぽい構造に復元（mmrは0でOK）
-function assignmentFromRecord(rec: MatchRecord, players: Player[]): Assignment {
-  const id2name = new Map(players.map(p => [p.id, p.name]));
-
-  const mk = (ids?: string[], names?: string[]): BalPlayer[] => {
-    if (ids && ids.length > 0) {
-      return ids.map(id => ({
-        id,
-        name: id2name.get(id) ?? "(unknown)",
-        mmr: 0,
-      }));
-    }
-    // 古い履歴でIDがない場合は名前ベースで暫定IDを付与
-    return (names ?? []).map(n => ({
-      id: `name:${n}`,
-      name: n,
-      mmr: 0,
-    }));
-  };
-
-  return {
-    teamA: mk(rec.teamAIds, rec.teamA),
-    teamB: mk(rec.teamBIds, rec.teamB),
-    score: 0, mmrA: 0, mmrB: 0, mmrScore: 0, pairScore: 0,
-  };
-}
-
-
-// 作った 64桁のSHA-256ハッシュ値に置き換え
-const PASSWORD_HASH_HEX = "b826ad52cfadcf698c46d305969aaeed6f5a36d1c215cfd6f44b1c3621924f3f";
-
-// 文字列 → SHA-256(HEX) 変換
-async function sha256Hex(text: string): Promise<string> {
-  const enc = new TextEncoder().encode(text);
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
 
 const RANK_TO_MMR: Record<string, number> = {
   iron4: 600, iron3: 650, iron2: 700, iron1: 750,
@@ -89,50 +32,6 @@ const STREAK_CAP = 100;
 const TEAMMATE_LOOKBACK = 3;   // 直近何試合分の履歴を見るか（最新から）
 const TEAMMATE_PENALTY = 20;  // 同一ペアが再同席したときのペナルティ（×回数）
 
-
-// できるだけ 6人入替（= A→B と B→A が3人ずつ）を優先し、
-// 無理なら 5→4→3→2… と緩めていく
-function pickBestWithSwitchPreference(
-  eligible: Assignment[],
-  prev: Assignment | null,
-  changeW: number
-): Assignment {
-  if (!prev) {
-    // 1回目は純粋にスコアのみ
-    return eligible.reduce((a, b) => (a.score < b.score ? a : b));
-  }
-
-  // 変更人数を事前計算
-  const withCh = eligible.map(c => {
-    const ch = changedCount(prev, c);
-    return { c, ch };
-  });
-
-  // 優先階層（6人入替を最優先）
-  const tiers = [6, 5, 4, 3, 2, 1, 0];
-  let pool = withCh;
-  for (const t of tiers) {
-    const cand = withCh.filter(x => x.ch >= t);
-    if (cand.length) {
-      pool = cand;
-      break;
-    }
-  }
-
-  // 同じ階層内で最終スコアを最小化
-  let picked = pool[0].c;
-  let bestVal = pool[0].c.score - changeW * changeScore(pool[0].ch);
-  for (let i = 1; i < pool.length; i++) {
-    const { c, ch } = pool[i];
-    const val = c.score - changeW * changeScore(ch);
-    if (val < bestVal) {
-      picked = c;
-      bestVal = val;
-    }
-  }
-  return picked;
-}
-
 /* -------------------- 型 -------------------- */
 type Player = {
   id: string;
@@ -142,6 +41,7 @@ type Player = {
   wins: number;
   losses: number;
   streak: number; // >0 連勝, <0 連敗, 0 なし
+  riotId?: string; // Riot APIで登録した場合のみ保存
 };
 
 // ★ ID ベースで運用（重複名でも安全）
@@ -196,65 +96,6 @@ function streakAdj(streak: number): number {
 function pairKey(a: string, b: string) {
   return [a, b].sort().join("|");
 }
-// 直前(複数)の編成を避けるための巨大ペナルティ
-const REPEAT_ASSIGNMENT_PENALTY = 1_000_000;
-
-// ===== 多様性・入替優先の設定 =====
-const DIVERSITY_TOL = 450; // 200 → 450 に拡大（±400〜500 目安）
-const CHANGE_WEIGHT = 80;  // 35 → 80 に強化
-
-
-
-// チーム構成のキー（順序に依らない／A-B入れ替えでも同じキー）
-function assignmentKey(teamA: BalPlayer[], teamB: BalPlayer[]): string {
-  const a = teamA.map(p => p.id).sort().join(",");
-  const b = teamB.map(p => p.id).sort().join(",");
-  return a < b ? `${a}||${b}` : `${b}||${a}`;
-}
-
-function sideMap(assign: Assignment): Record<string, 'A' | 'B'> {
-  const m: Record<string, 'A' | 'B'> = {};
-  assign.teamA.forEach(p => { m[p.id] = 'A'; });
-  assign.teamB.forEach(p => { m[p.id] = 'B'; });
-  return m;
-}
-
-function changedCount(prev: Assignment | null, cand: Assignment): number {
-  if (!prev) return 0;
-  const prevA = new Set(prev.teamA.map(p => p.id));
-  const prevB = new Set(prev.teamB.map(p => p.id));
-  let cnt = 0;
-  for (const p of cand.teamA) if (prevB.has(p.id)) cnt++; // B→A
-  for (const p of cand.teamB) if (prevA.has(p.id)) cnt++; // A→B
-  return cnt;
-}
-
-function changeScore(changed: number): number {
-  if (changed <= 1) return 0;
-  if (changed === 2) return 1.0;
-  if (changed === 3) return 1.7; // ← ここが最大
-  if (changed === 4) return 0.5;
-  if (changed === 5) return 0;
-  return 0.5;
-}
-
-
-
-
-
-// 既存の score に「直前編成の回避ペナルティ」を足すラッパー
-function scoreAssignmentWithBan(
-  teamA: BalPlayer[],
-  teamB: BalPlayer[],
-  pairCounts: PairCounts,
-  banned: Set<string>
-): Assignment {
-  const base = scoreAssignment(teamA, teamB, pairCounts);
-  const key = assignmentKey(teamA, teamB);
-  const add = banned.has(key) ? REPEAT_ASSIGNMENT_PENALTY : 0;
-  return { ...base, score: base.score + add };
-}
-
 
 type PairCounts = Record<string, number>;
 
@@ -305,56 +146,24 @@ function scoreAssignment(teamA: BalPlayer[], teamB: BalPlayer[], pairCounts: Pai
 }
 
 /* ===== ランダム探索（一般） ===== */
-function bestOf(
-  players: BalPlayer[],
-  iters = 3000,
-  pairCounts: PairCounts,
-  banned: Set<string>,
-  prev: Assignment | null,
-  tol = DIVERSITY_TOL,
-  changeW = CHANGE_WEIGHT
-): Assignment | null {
+function bestOf(players: BalPlayer[], iters = 3000, pairCounts: PairCounts): Assignment | null {
   if (players.length < 6) return null;
-
-  let minScore = Infinity;
-  const pool: Assignment[] = [];
-
+  let best: Assignment | null = null;
   for (let i = 0; i < iters; i++) {
     const s = shuffle(players);
     const mid = Math.floor(s.length / 2);
-    const cand = scoreAssignmentWithBan(s.slice(0, mid), s.slice(mid), pairCounts, banned);
-    pool.push(cand);
-    if (cand.score < minScore) minScore = cand.score;
+    const cand = scoreAssignment(s.slice(0, mid), s.slice(mid), pairCounts);
+    if (!best || cand.score < best.score) best = cand;
   }
-
-  // 「ほぼ最適」だけを残す
-  const cutoff = minScore + tol;
-  const eligible = pool.filter(c => c.score <= cutoff);
-  if (eligible.length === 0) return null;
-
-  // ★ 入替人数(6→5→4→…)で優先 → その範囲で最終スコア最小
-  const picked = pickBestWithSwitchPreference(eligible, prev, changeW);
-  return picked;
-
+  return best;
 }
 
-
 /* ===== 厳密最適化（10人専用・全探索/対称性除去） ===== */
-function bestOfExact10(
-  players: BalPlayer[],
-  pairCounts: PairCounts,
-  banned: Set<string>,
-  prev: Assignment | null,
-  tol = DIVERSITY_TOL,
-  changeW = CHANGE_WEIGHT
-): Assignment | null {
+function bestOfExact10(players: BalPlayer[], pairCounts: PairCounts): Assignment | null {
   if (players.length !== 10) return null;
-
   const idx = [...players.keys()];
-  const fixed = 0;
-
-  let minScore = Infinity;
-  const pool: Assignment[] = [];
+  const fixed = 0; // idx0 を A に固定し対称性を除去
+  let best: Assignment | null = null;
 
   for (let a1 = 1; a1 < 10; a1++) {
     for (let a2 = a1 + 1; a2 < 10; a2++) {
@@ -363,72 +172,67 @@ function bestOfExact10(
           const aIdx = new Set([fixed, a1, a2, a3, a4]);
           const teamA = idx.filter(i => aIdx.has(i)).map(i => players[i]);
           const teamB = idx.filter(i => !aIdx.has(i)).map(i => players[i]);
-          const cand = scoreAssignmentWithBan(teamA, teamB, pairCounts, banned);
-          pool.push(cand);
-          if (cand.score < minScore) minScore = cand.score;
+          const cand = scoreAssignment(teamA, teamB, pairCounts);
+          if (!best || cand.score < best.score) best = cand;
         }
       }
     }
   }
-
-  const cutoff = minScore + tol;
-  const eligible = pool.filter(c => c.score <= cutoff);
-  if (eligible.length === 0) return null;
-
-  // ★ 入替人数(6→5→4→…)で優先 → その範囲で最終スコア最小
-  const picked = pickBestWithSwitchPreference(eligible, prev, changeW);
-  return picked;
-
+  return best;
 }
 
+/* Riot APIのソロランクをTEAMMIXのランクキーへ変換 */
+type RiotRankResponse = {
+  gameName: string;
+  tagLine: string;
+  rank: { tier: string; division: string; lp: number } | null;
+};
 
+function riotRankToKey(data: RiotRankResponse): string | null {
+  if (!data.rank) return null;
+  const tier = data.rank.tier.toLowerCase();
+  const division = ({ I: "1", II: "2", III: "3", IV: "4" } as Record<string, string>)[data.rank.division];
+  const key = ["master", "grandmaster", "challenger"].includes(tier) ? tier : `${tier}${division ?? ""}`;
+  return RANKS.includes(key) ? key : null;
+}
+
+async function fetchRiotRank(riotId: string): Promise<RiotRankResponse> {
+  const hash = riotId.lastIndexOf("#");
+  const gameName = riotId.slice(0, hash).trim();
+  const tagLine = riotId.slice(hash + 1).trim();
+  if (hash < 1 || !gameName || !tagLine) {
+    throw new Error("Riot IDは ゲーム名#タグ の形式で入力してください。");
+  }
+  let response: Response;
+  try {
+    response = await fetch(`http://localhost:3001/api/rank?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`);
+  } catch {
+    throw new Error("APIサーバーに接続できません。node server/index.cjs を起動してください。");
+  }
+  if (!response.ok) {
+    const details = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(`${details.error ?? "ランクの取得に失敗しました"}（HTTP ${response.status}）`);
+  }
+  return await response.json() as RiotRankResponse;
+}
 
 /* -------------------- メインUI -------------------- */
 export default function App() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [name, setName] = useState("");
   const [rank, setRank] = useState("silver4");
+  const [riotIdInput, setRiotIdInput] = useState("");
+  const [riotBusy, setRiotBusy] = useState(false);
+  const [riotUpdatingId, setRiotUpdatingId] = useState<string | null>(null);
+  const [riotMessage, setRiotMessage] = useState("");
   const [result, setResult] = useState<Assignment | null>(null);
-
-
-  // パスワードゲート用
-  const [secretUnlocked, setSecretUnlocked] = useState(false);
-  const [pwInput, setPwInput] = useState("");
-  const [pwError, setPwError] = useState("");
-
-  // 直近で出した編成キー（直前2件を避ける）
-  const [recentKeys, setRecentKeys] = useState<string[]>([]);
-
-  // よく使うメンバー（クリック登録用）
-  type Favorite = { id: string; name: string; rank: string };
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
-
-
-  // サイド(ラベル)だけ入れ替え
-  const swapSides = () => {
-    if (!result) return;
-    const newRes: Assignment = {
-      ...result,
-      teamA: result.teamB,
-      teamB: result.teamA,
-      mmrA: result.mmrB,
-      mmrB: result.mmrA,
-      // mmrScore / pairScore / score はそのままでOK
-    };
-    setResult(newRes);
-
-    // これは「同じチームのままラベルだけ反転」なので、直後のハイライトは消す
-    setSwitched({});
-  };
-
 
   // 対戦履歴（最新が先頭）
   const [history, setHistory] = useState<MatchRecord[]>([]);
 
   // 前回の編成（「チームが変わった人」を出すため）
   const [prevResult, setPrevResult] = useState<Assignment | null>(null);
-  type SwitchDir = 'A→B' | 'B→A' | null;
-  const [switched, setSwitched] = useState<Record<string, SwitchDir>>({});
+  const [changed, setChanged] = useState<Record<string, boolean>>({});
 
   /* 保存・読み込み */
   useEffect(() => {
@@ -443,13 +247,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("match_history", JSON.stringify(history));
   }, [history]);
-  // 直前に「記録」された試合（history[0]）を Assignment 風に復元
-  const lastMatch = useMemo<Assignment | null>(() => {
-    if (history.length === 0) return null;
-    return assignmentFromRecord(history[0], players);
-  }, [history, players]);
-
-
 
   /* 追加・削除・選択・ランク変更 */
   const addPlayer = () => {
@@ -472,6 +269,54 @@ export default function App() {
     setName("");
   };
 
+  const addFromRiot = async () => {
+    if (riotBusy) return;
+    if (players.length >= 20) return alert("最大20人までです。");
+    setRiotBusy(true);
+    setRiotMessage("");
+    try {
+      const data = await fetchRiotRank(riotIdInput);
+      const rankKey = riotRankToKey(data);
+      if (!rankKey) throw new Error("ソロランクが未取得、または対応外のランクです。手動登録をご利用ください。");
+      const fullId = `${data.gameName}#${data.tagLine}`;
+      if (players.some(p => p.riotId?.toLowerCase() === fullId.toLowerCase())) {
+        throw new Error("このRiot IDはすでに登録されています。");
+      }
+      if (players.some(p => p.name === fullId) && !confirm("同じ名前のプレイヤーがいます。登録しますか？")) return;
+      setPlayers(prev => {
+        if (prev.length >= 20) return prev;
+        return [...prev, {
+          id: crypto.randomUUID(), name: fullId, riotId: fullId, rank: rankKey,
+          selected: prev.filter(p => p.selected).length < 10,
+          wins: 0, losses: 0, streak: 0,
+        }];
+      });
+      setRiotIdInput("");
+      setRiotMessage(`${fullId} を ${rankKey.toUpperCase()} で登録しました。`);
+    } catch (error) {
+      setRiotMessage(error instanceof Error ? error.message : "取得に失敗しました。");
+    } finally {
+      setRiotBusy(false);
+    }
+  };
+
+  const refreshRiotRank = async (player: Player) => {
+    if (!player.riotId || riotUpdatingId) return;
+    setRiotUpdatingId(player.id);
+    setRiotMessage("");
+    try {
+      const data = await fetchRiotRank(player.riotId);
+      const rankKey = riotRankToKey(data);
+      if (!rankKey) throw new Error("ソロランクを取得できませんでした。現在のランクを維持します。");
+      setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, rank: rankKey } : p));
+      setRiotMessage(`${player.name} のランクを ${rankKey.toUpperCase()} に更新しました。`);
+    } catch (error) {
+      setRiotMessage(error instanceof Error ? error.message : "更新に失敗しました。");
+    } finally {
+      setRiotUpdatingId(null);
+    }
+  };
+
   const removePlayer = (id: string) => setPlayers(players.filter(p => p.id !== id));
 
   const toggleSelect = (id: string) => {
@@ -484,30 +329,6 @@ export default function App() {
   const updateRank = (id: string, newRank: string) => {
     setPlayers(prev => prev.map(p => (p.id === id ? { ...p, rank: newRank } : p)));
   };
-
-  // 「お気に入り」から登録 or 既存を選択ON
-  const addOrSelectFavorite = (name: string, rank: string) => {
-    const exist = players.find(p => p.name === name);
-    if (exist) {
-      setPlayers(prev => prev.map(p =>
-        p.id === exist.id ? { ...p, selected: true, rank } : p
-      ));
-      return;
-    }
-    if (players.length >= 20) return alert("最大20人までです。");
-    const selectedCount = players.filter(p => p.selected).length;
-    const newP: Player = {
-      id: crypto.randomUUID(),
-      name,
-      rank,
-      selected: selectedCount < 10, // 空きがあれば自動選択ON
-      wins: 0,
-      losses: 0,
-      streak: 0,
-    };
-    setPlayers(prev => [...prev, newP]);
-  };
-
 
   // 個別ストリークリセット
   const resetStreakOne = (id: string) => {
@@ -528,51 +349,32 @@ export default function App() {
     const selected = players.filter(p => p.selected);
     if (selected.length !== 10) return alert(`ちょうど10人選んでください（現在${selected.length}人）`);
 
-    const prev = result ?? null;
-
     const balPlayers: BalPlayer[] = selected.map(p => {
       const base = RANK_TO_MMR[p.rank] ?? 1200;
       const eff = base + streakAdj(p.streak);
       return { id: p.id, name: p.name, mmr: eff };
     });
 
-    // 直前に出した編成（最大2件）を避ける
-    const banned = new Set(recentKeys);
-
-    const res =
-      bestOfExact10(balPlayers, pairCounts, banned, prev) ??
-      bestOf(balPlayers, 3000, pairCounts, banned, prev);
+    const res = bestOfExact10(balPlayers, pairCounts) ?? bestOf(balPlayers, 3000, pairCounts);
     if (!res) return;
-
-    if (prev) setPrevResult(prev);
     setResult(res);
 
-    // 変更者ハイライト（IDベース & 方向付き）
-    let switchMap: Record<string, SwitchDir> = {};
-    const prevForSwitch: Assignment | null = lastMatch ?? prev;  // ★ 直前試合を最優先
-    if (prevForSwitch) {
-      const prevSide = sideMap(prevForSwitch);
-      const nowSide = sideMap(res);
+    // 前回編成と比較して、チームが変わった人をマーキング（名前ベースでOK）
+    const changedMap: Record<string, boolean> = {};
+    if (prevResult) {
+      const prevA = new Set(prevResult.teamA.map(p => p.name));
+      const prevB = new Set(prevResult.teamB.map(p => p.name));
       for (const p of [...res.teamA, ...res.teamB]) {
-        const before = prevSide[p.id];
-        const now = nowSide[p.id];
-        switchMap[p.id] = (before && now && before !== now)
-          ? (before === 'A' ? 'A→B' : 'B→A')
-          : null;
+        const nowA = res.teamA.some(x => x.name === p.name);
+        const nowB = res.teamB.some(x => x.name === p.name);
+        const wasA = prevA.has(p.name);
+        const wasB = prevB.has(p.name);
+        changedMap[p.name] = (wasA && nowB) || (wasB && nowA);
       }
-    } else {
-      switchMap = {};
     }
-    setSwitched(switchMap);
-
-
-    // ★ 採用した編成を recentKeys に記録（直前2件の構成を避けるため）
-    const key = assignmentKey(res.teamA, res.teamB);
-    setRecentKeys(prevKeys => [key, ...prevKeys.filter(k => k !== key)].slice(0, 2));
-  }
-
-
-
+    setChanged(changedMap);
+    setPrevResult(res);
+  };
 
   /* 勝敗を記録 → 履歴保存＆個人戦績更新 */
   const recordResult = (winner: "A" | "B") => {
@@ -622,7 +424,6 @@ export default function App() {
 
     // 今回の編成を「直近の基準」として固定（次回の変更ハイライト用）
     setPrevResult(result);
-    setRecentKeys([]); // ★ ここで回避セットをリセット（任意）
   };
 
   const clearHistory = () => {
@@ -648,323 +449,67 @@ export default function App() {
     return acc;
   }, { n: 0, names: [] });
 
+  const selectedCount = players.filter(p => p.selected).length;
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 p-6">
-      <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow p-6 space-y-6">
-        <h1 className="text-2xl font-bold text-center">LoL オートバランス（履歴・ストリーク・同席回避）</h1>
-
-        {/* 登録フォーム */}
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            type="text"
-            placeholder="プレイヤー名"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="border p-2 rounded-lg flex-1 min-w-[150px]"
-          />
-          <select value={rank} onChange={(e) => setRank(e.target.value)} className="border p-2 rounded-lg">
-            {RANKS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}
-          </select>
-          <button onClick={addPlayer} className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg">追加</button>
-        </div>
-
-        {/* 管理者用：よく使うメンバー（パスワード保護） */}
-        <div className="bg-gray-100 rounded-xl p-3 space-y-2">
-          <h3 className="font-semibold text-sm">よく使うメンバー（パスワード保護）</h3>
-
-          {!secretUnlocked ? (
-            <div className="flex items-center gap-2">
-              <input
-                type="password"
-                placeholder="パスワード"
-                value={pwInput}
-                onChange={(e) => setPwInput(e.target.value)}
-                className="border p-1 rounded-md text-sm"
-              />
-              <button
-                onClick={async () => {
-                  setPwError("");
-                  const hex = await sha256Hex(pwInput);
-                  if (hex === PASSWORD_HASH_HEX) {
-                    setSecretUnlocked(true);
-                    setFavorites(SECRET_FAVORITES.map(x => ({ id: crypto.randomUUID(), ...x })));
-                    setPwInput("");
-                  } else {
-                    setPwError("パスワードが違います");
-                  }
-                }}
-                className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md"
-              >
-                表示
-              </button>
-              {pwError && <span className="text-xs text-red-500">{pwError}</span>}
-            </div>
-          ) : (
-            <>
-              {favorites.length === 0 ? (
-                <p className="text-xs opacity-70">（まだ登録がありません）</p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {favorites.map(f => (
-                    <button
-                      key={f.id}
-                      onClick={() => addOrSelectFavorite(f.name, f.rank)}
-                      className="text-xs rounded-full border px-3 py-1 hover:bg-white"
-                      title="クリックで登録/選択"
-                    >
-                      {f.name} <span className="opacity-60">[{f.rank.toUpperCase()}]</span>
-                    </button>
-                  ))}
+    <div className="studio-page">
+      <div className="studio-layout">
+        <header className="studio-header">
+          <div className="studio-brand"><span className="studio-brandmark"><i></i><i></i><i></i><i></i></span><span>TEAM<span className="brand-accent">MIX</span><small>LEAGUE CUSTOM BALANCER</small></span></div>
+          <div className="studio-status"><span className="status-dot" /> LOCAL WORKSPACE <span className="status-divider" /> v2.0</div>
+        </header>
+        <section className="studio-intro">
+          <div><div className="eyebrow"><span className="eyebrow-line" /> MATCH SETUP / 01</div><h1>ちょうどいいチームを、<br /><em>かんたんに。</em></h1><p>プレイヤーを選んで、ワンクリックでフェアな5対5に。<br />ランク・連勝補正・過去の組み合わせまで考慮します。</p></div>
+          <div className="intro-stat"><span className="stat-overline">READY TO PLAY</span><strong>{selectedCount}<span> / 10</span></strong><span className="stat-foot">選択中のプレイヤー</span><div className="stat-track"><span style={{ width: `${selectedCount * 10}%` }} /></div></div>
+        </section>
+        <div className="studio-grid">
+          <main className="studio-main">
+            <section className="panel player-panel">
+              <div className="panel-heading"><div><span className="section-kicker">01 / PLAYERS</span><h2>プレイヤー管理 <span className="count-pill">{players.length} / 20</span></h2></div><span className="muted-caption">参加メンバーを登録・選択</span></div>
+              <div className="add-form"><input aria-label="プレイヤー名" placeholder="プレイヤー名を入力" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addPlayer(); }} /><select aria-label="ランク" value={rank} onChange={e => setRank(e.target.value)}>{RANKS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}</select><button className="btn btn-dark" onClick={addPlayer}>プレイヤーを追加 <span>＋</span></button></div>
+              <div className="riot-register">
+                <div className="riot-register-title">Riot IDで自動登録 <span>SOLO RANK</span></div>
+                <div className="riot-register-fields">
+                  <input aria-label="Riot ID" placeholder="ゲーム名#タグ（例：Karina#nkotu）" value={riotIdInput}
+                    onChange={e => setRiotIdInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") void addFromRiot(); }} />
+                  <button className="btn btn-riot" type="button" disabled={riotBusy || players.length >= 20}
+                    onClick={() => void addFromRiot()}>{riotBusy ? "取得中…" : "ランク取得して登録"}</button>
                 </div>
-              )}
-              <button
-                onClick={() => setSecretUnlocked(false)}
-                className="text-[11px] text-gray-500 hover:underline mt-1"
-              >
-                非表示にする
-              </button>
-            </>
-          )}
-        </div>
-
-
-        {/* 登録済み一覧 */}
-        <div>
-          <h2 className="font-semibold mb-2">登録済みプレイヤー（{players.length}/20）</h2>
-          {players.length === 0 ? (
-            <p className="text-sm opacity-70">まだ登録されていません。</p>
-          ) : (
-            <ul className="divide-y">
-              {players.map(p => (
-                <li key={p.id} className="flex items-center justify-between py-2 px-1 hover:bg-gray-100 rounded-lg">
-                  <div className="flex items-center gap-x-5 gap-y-2 flex-wrap">
-                    <input
-                      type="checkbox"
-                      checked={p.selected}
-                      onChange={() => toggleSelect(p.id)}
-                      disabled={!p.selected && players.filter(pp => pp.selected).length >= 10}
-                    />
-                    <b className="mr-3">{p.name}</b>
-                    <select
-                      value={p.rank}
-                      onChange={(e) => updateRank(p.id, e.target.value)}
-                      className="border p-1 rounded-md text-sm"
-                    >
-                      {RANKS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}
-                    </select>
-                  </div>
-
-                  {/* 戦績とストリーク表示 */}
-                  <div className="text-xs opacity-80 text-right min-w-[200px]">
-                    <div>W-L: {p.wins}-{p.losses}</div>
-                    <div>
-                      {p.streak > 0 && <>連勝: {p.streak}（+{streakAdj(p.streak)} MMR）</>}
-                      {p.streak < 0 && <>連敗: {Math.abs(p.streak)}（{streakAdj(p.streak)} MMR）</>}
-                      {p.streak === 0 && <>ストリークなし（±0）</>}
-                    </div>
-                    <div className="mt-1 flex gap-2 justify-end">
-                      <button
-                        onClick={() => resetStreakOne(p.id)}
-                        className="inline-flex items-center rounded-md border px-2 py-1 text-[11px] hover:bg-gray-50"
-                        title="このプレイヤーのストリークを0に"
-                      >
-                        ストリークリセット
-                      </button>
-                    </div>
-                  </div>
-
-                  <button onClick={() => removePlayer(p.id)} className="text-sm text-red-500 hover:underline ml-3">削除</button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* 選択状況 & 実行 */}
-        <div className="bg-gray-100 rounded-xl p-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold">選択中のメンバー ({players.filter(p => p.selected).length}/10)</h3>
-            <button
-              onClick={runAutoBalance}
-              className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg disabled:opacity-50"
-              disabled={players.filter(p => p.selected).length !== 10}
-            >
-              選択した10人でオートバランス
-            </button>
-          </div>
-          {players.filter(p => p.selected).length === 0
-            ? <p className="text-sm opacity-70">まだ選択されていません。</p>
-            : <ul className="text-sm list-disc pl-5">
-              {players.filter(p => p.selected).map(p => {
-                const base = RANK_TO_MMR[p.rank] ?? 1200;
-                const adj = streakAdj(p.streak);
-                const eff = base + adj;
-                return (
-                  <li key={p.id}>
-                    {p.name}（{p.rank.toUpperCase()} / 有効MMR {eff}{adj !== 0 ? `（補正 ${adj > 0 ? "+" : ""}${adj}）` : ""}）
-                  </li>
-                );
-              })}
-            </ul>}
-        </div>
-
-        {/* 結果表示 & 試合結果記録 */}
-        {result && (
-          <>
-            <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto_1fr] items-start">
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h3 className="font-semibold mb-2">チームA（MMR {result.mmrA}）</h3>
-                {/* 👇 この位置に挿入 */}
-                {/* チームAカード内の前回表示 */}
-                {(lastMatch ?? prevResult) && (
-                  <div className="text-[11px] opacity-60 mb-1">
-                    前回A: {(lastMatch ?? prevResult)!.teamA.map(p => p.name).join(", ")}
-                  </div>
-                )}
-
-
-                <ul className="text-sm space-y-1">
-                  {[...result.teamA].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.id}>
-                      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-                        {switched[p.id] ? `⇄  ` : ""}
-                        {p.name}
-                      </span>
-                      （MMR {p.mmr}）
-                    </li>
-                  ))}
-                </ul>
-
+                {riotMessage && <div className="riot-feedback" role="status">{riotMessage}</div>}
               </div>
-              {/* ⇔ サイド入れ替え（中央・小さめ） */}
-              <div className="flex md:flex-col items-center justify-center md:min-w-[140px]">
-                <button
-                  onClick={swapSides}
-                  className="text-xs md:text-sm border px-3 py-1 rounded-md hover:bg-gray-50"
-                  title="メンバーはそのまま、A/Bのラベルだけを入れ替えます"
-                >
-                  ⇔ サイドを入れ替え
-                </button>
-                <div className="hidden md:block text-[10px] opacity-60 mt-1 text-center">
-                  A/Bラベルのみ反転
-                </div>
-              </div>
-
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h3 className="font-semibold mb-2">チームB（MMR {result.mmrB}）</h3>
-                {/* チームBカード内の前回表示 */}
-                {(lastMatch ?? prevResult) && (
-                  <div className="text-[11px] opacity-60 mb-1">
-                    前回B: {(lastMatch ?? prevResult)!.teamB.map(p => p.name).join(", ")}
-                  </div>
-                )}
-
-
-                <ul className="text-sm space-y-1">
-                  {[...result.teamB].sort((a, b) => b.mmr - a.mmr).map(p => (
-                    <li key={p.id}>
-                      <span className={switched[p.id] ? "bg-yellow-100 px-1 rounded" : ""}>
-                        {switched[p.id] ? `⇄  ` : ""}
-                        {p.name}
-                      </span>
-                      （MMR {p.mmr}）
-                    </li>
-                  ))}
-                </ul>
-
-              </div>
-              <div className="md:col-span-2 bg-white rounded-2xl shadow p-4">
-                <div className="text-sm">総合スコア（小さいほど良）: <b>{result.score}</b></div>
-                <div className="text-xs opacity-80 mt-1">内訳：MMR差 <b>{result.mmrScore}</b> ＋ 同席ペナルティ <b>{result.pairScore}</b></div>
-                <div className="text-xs opacity-70">
-                  ※ MMR差 + 同席ペナルティ（直近{TEAMMATE_LOOKBACK}試合）。黄色の ⇄ は「前回からチームが変わった人」。
-                </div>
-              </div>
-            </div>
-
-            {/* 試合結果の記録ボタン */}
-            <div className="mt-4 flex items-center gap-3">
-              <span className="text-sm opacity-80">試合結果を記録：</span>
-              <button
-                onClick={() => recordResult("A")}
-                className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded-md"
-              >
-                チームA WIN
-              </button>
-              <button
-                onClick={() => recordResult("B")}
-                className="bg-rose-500 hover:bg-rose-600 text-white px-3 py-2 rounded-md"
-              >
-                チームB WIN
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* ストリーク要約 */}
-        <div className="bg-white rounded-2xl shadow p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold">ストリーク状況</h3>
-            <button
-              onClick={resetStreakAll}
-              className="text-xs rounded-md border px-2 py-1 hover:bg-gray-50"
-              title="全員のストリークを0に戻す"
-            >
-              全員ストリークリセット
-            </button>
-          </div>
-          <div className="text-sm">
-            {maxWin.n > 0
-              ? <>現在 <b>{maxWin.names.join(", ")}</b> が <b>{maxWin.n}連勝中</b> 🔥</>
-              : <>現在、連勝中のプレイヤーはいません。</>}
-          </div>
-          <div className="text-sm mt-1">
-            {maxLose.n > 0
-              ? <>現在 <b>{maxLose.names.join(", ")}</b> が <b>{maxLose.n}連敗中</b> 💧</>
-              : <>現在、連敗中のプレイヤーはいません。</>}
-          </div>
-        </div>
-
-        {/* 対戦履歴 */}
-        <div className="bg-white rounded-2xl shadow p-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold">対戦履歴（{history.length}件）</h3>
-            {history.length > 0 && (
-              <button onClick={clearHistory} className="text-sm text-red-500 hover:underline">
-                すべて削除
-              </button>
-            )}
-          </div>
-          {history.length === 0 ? (
-            <p className="text-sm opacity-70 mt-1">まだ記録がありません。</p>
-          ) : (
-            <ul className="mt-2 space-y-2">
-              {history.map(h => (
-                <li key={h.id} className="rounded-lg border p-3">
-                  <div className="text-sm font-semibold">
-                    第{h.index}戦：{h.winner === "A" ? "チームA WIN / チームB LOSE" : "チームB WIN / チームA LOSE"}
-                  </div>
-                  <div className="text-xs opacity-70">
-                    {new Date(h.timeISO).toLocaleString()} ｜ MMR A:{h.mmrA} / B:{h.mmrB} ｜ スコア:{h.score}
-                  </div>
-                  <details className="mt-1">
-                    <summary className="text-xs cursor-pointer opacity-80">メンバーを見る</summary>
-                    <div className="grid md:grid-cols-2 gap-2 mt-2 text-xs">
-                      <div>
-                        <div className="font-semibold">チームA</div>
-                        <ul className="list-disc pl-4">{h.teamA.map(n => <li key={n}>{n}</li>)}</ul>
+              <div className="player-list player-list-minimal"> {players.length === 0 ? <div className="empty-state">まだプレイヤーがいません。上のフォームから追加してください。</div> : players.map(p => (
+                <div className={`player-row player-tile ${p.selected ? 'is-selected' : ''}`} key={p.id}>
+                  <label className="player-tile-main">
+                    <input type="checkbox" checked={p.selected} onChange={() => toggleSelect(p.id)} disabled={!p.selected && selectedCount >= 10} aria-label={`${p.name}を参加メンバーに選択`} />
+                    <span className="player-tile-check" aria-hidden="true" />
+                    <span className="player-tile-name" title={p.name}>{p.name}</span>
+                  </label>
+                  <div className="player-tile-bottom">
+                    <select value={p.rank} aria-label={`${p.name}のランク`} onChange={e => updateRank(p.id, e.target.value)}>{RANKS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}</select>
+                    <details className="player-tile-details">
+                      <summary aria-label={`${p.name}の詳細設定`}>詳細</summary>
+                      <div className="player-tile-menu">
+                        <div>戦績：{p.wins}勝 {p.losses}敗</div>
+                        <div>{p.streak === 0 ? '連勝・連敗なし' : `${Math.abs(p.streak)}連${p.streak > 0 ? '勝' : '敗'} / 補正 ${streakAdj(p.streak) > 0 ? '+' : ''}${streakAdj(p.streak)} MMR`}</div>
+                        <button type="button" onClick={() => resetStreakOne(p.id)}>連勝・連敗をリセット</button>
+                        <button type="button" className="player-tile-delete" onClick={() => { if (confirm(`${p.name}を削除しますか？`)) removePlayer(p.id); }}>プレイヤーを削除</button>
                       </div>
-                      <div>
-                        <div className="font-semibold">チームB</div>
-                        <ul className="list-disc pl-4">{h.teamB.map(n => <li key={n}>{n}</li>)}</ul>
-                      </div>
-                    </div>
-                  </details>
-                </li>
-              ))}
-            </ul>
-          )}
+                    </details>
+                  </div>
+                </div>
+              ))}</div>
+            </section>
+            <section className="panel results-panel"><div className="panel-heading"><div><span className="section-kicker">02 / TEAM RESULT</span><h2>チーム編成</h2></div><span className="muted-caption">バランス結果を比較</span></div>
+              {!result ? <div className="result-placeholder"><div className="placeholder-graphic"><div className="placeholder-card a" /><div className="placeholder-card b" /><div className="placeholder-center">VS</div></div><strong>まだチームが編成されていません</strong><p>10人選択して「チームを編成」を押してください。</p></div> : <><div className="teams-grid"><div className="team-card team-a"><div className="team-title"><span>TEAM A</span><strong>{result.mmrA.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamA].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.name] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div><div className="team-card team-b"><div className="team-title"><span>TEAM B</span><strong>{result.mmrB.toLocaleString()} <small>MMR</small></strong></div><div className="team-members">{[...result.teamB].sort((a, b) => b.mmr - a.mmr).map((p, i) => <div className="team-member" key={p.id}><span className="team-index">{String(i + 1).padStart(2, '0')}</span><strong>{p.name}</strong>{changed[p.name] && <span className="changed-label">変更</span>}<span className="member-mmr">{p.mmr}</span></div>)}</div></div></div><div className="score-strip"><div><span>MMR DIFFERENCE</span><strong>{result.mmrScore}</strong></div><div><span>PAIR PENALTY</span><strong>{result.pairScore}</strong></div><div><span>TOTAL SCORE</span><strong>{result.score}</strong></div></div><div className="win-actions"><span>試合結果を記録</span><button className="btn win-a" onClick={() => recordResult('A')}>TEAM A WIN</button><button className="btn win-b" onClick={() => recordResult('B')}>TEAM B WIN</button></div></>}
+            </section>
+            <section className="panel history-panel"><div className="panel-heading"><div><span className="section-kicker">03 / MATCH LOG</span><h2>対戦履歴 <span className="count-pill">{history.length}</span></h2></div>{history.length > 0 && <button className="subtle-link" onClick={clearHistory}>履歴をすべて削除</button>}</div>{history.length === 0 ? <div className="empty-state">まだ対戦履歴はありません。</div> : <div className="history-list">{history.map(h => <details className="history-entry" key={h.id}><summary><span className="history-round">MATCH {String(h.index).padStart(2, '0')}</span><strong>TEAM {h.winner} WIN</strong><small>{new Date(h.timeISO).toLocaleString('ja-JP')}</small><span className="history-chevron">⌄</span></summary><div className="history-detail"><div><b>TEAM A</b>{h.teamA.join(' / ')}</div><div><b>TEAM B</b>{h.teamB.join(' / ')}</div><p>MMR {h.mmrA} : {h.mmrB}　/　スコア {h.score}</p></div></details>)}</div>}</section>
+          </main>
+          <aside className="studio-side"><section className="side-card action-card"><span className="section-kicker">QUICK ACTION</span><h2>準備ができたら<br />チームを作成。</h2><p>選択中の10人をもとに最適な組み合わせを計算します。</p><div className="selection-meter"><span>選択済み</span><strong>{selectedCount} <small>/ 10人</small></strong></div><div className="meter-dots">{Array.from({ length: 10 }, (_, i) => <span key={i} className={i < selectedCount ? 'active' : ''} />)}</div><button className="btn btn-primary" disabled={selectedCount !== 10} onClick={runAutoBalance}>チームを編成する <span>↗</span></button><small className="action-hint">{selectedCount === 10 ? '編成できます' : `あと${10 - selectedCount}人選択してください`}</small></section>
+            <section className="side-card streak-card"><div className="side-heading"><span className="section-kicker">CURRENT STREAK</span><button className="subtle-link" onClick={resetStreakAll}>全員リセット</button></div><h3>連勝・連敗の状況</h3><div className="streak-item"><span className="streak-indicator win" /><div><small>WIN STREAK</small><strong>{maxWin.n > 0 ? `${maxWin.n} 連勝` : '記録なし'}</strong><span>{maxWin.names.join('、') || '—'}</span></div></div><div className="streak-item"><span className="streak-indicator lose" /><div><small>LOSE STREAK</small><strong>{maxLose.n > 0 ? `${maxLose.n} 連敗` : '記録なし'}</strong><span>{maxLose.names.join('、') || '—'}</span></div></div></section>
+            <div className="side-note"><span className="note-line" />BALANCE SYSTEM <p>MMR差と直近{TEAMMATE_LOOKBACK}試合の同席履歴を考慮して、最もバランスのよい編成を選びます。</p></div>
+          </aside>
         </div>
+        <footer className="studio-footer"><span>TEAMMIX / CUSTOM MATCH TOOL</span><span>Made for better matches.</span></footer>
       </div>
     </div>
   );
