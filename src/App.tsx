@@ -181,7 +181,7 @@ async function fetchRiotRank(riotId: string): Promise<RiotRankResponse> {
   }
   let response: Response;
   try {
-    response = await fetch(`http://localhost:3001/api/rank?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`);
+    response = await fetch(`https://lol-autobalance.onrender.com/api/rank?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`);
   } catch {
     throw new Error("APIサーバーに接続できません。node server/index.cjs を起動してください。");
   }
